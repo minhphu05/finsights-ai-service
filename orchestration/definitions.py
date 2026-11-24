@@ -20,6 +20,7 @@ from dagster import (
     op,
     schedule,
 )
+from sqlalchemy.engine import make_url
 
 from app.ingestion.news_embedding_pipeline import run_news_embedding_window
 
@@ -53,24 +54,45 @@ def _run_tags() -> dict:
     }
 
 
-@op(
-    name="preprocess_chunk_embed_news",
-    out=Out(Nothing),
-    config_schema={
+def _op_config_schema(
+    *,
+    default_start_date: str = "2026-11-01",
+    default_end_date: str = "2026-11-23",
+    default_model: str = "voyage-4-large",
+    default_provider: str = "auto",
+    default_base_url: str = "",
+    default_postgres_target: str = "primary",
+):
+    return {
         "start_date": Field(
             String,
-            default_value="2026-11-01",
+            default_value=default_start_date,
             description="Inclusive Vietnam calendar date YYYY-MM-DD",
         ),
         "end_date": Field(
             String,
-            default_value="2026-11-23",
+            default_value=default_end_date,
             description="Inclusive Vietnam calendar date YYYY-MM-DD",
         ),
         "embedding_model": Field(
             String,
-            default_value="voyage-4-large",
-            description="Voyage model ID or Cloudflare @cf/... ID",
+            default_value=default_model,
+            description="Model ID served by the selected embedding provider",
+        ),
+        "embedding_provider": Field(
+            String,
+            default_value=default_provider,
+            description="auto, voyage, cloudflare, or ollama",
+        ),
+        "embedding_base_url": Field(
+            String,
+            default_value=default_base_url,
+            description="Base URL for an OpenAI-compatible embedding endpoint such as Ollama",
+        ),
+        "postgres_target": Field(
+            String,
+            default_value=default_postgres_target,
+            description="primary writes to finsights_embeddings; qwen writes to finsights_embeddings_qwen",
         ),
         "cloudflare_account_id": Field(
             String,
@@ -79,8 +101,9 @@ def _run_tags() -> dict:
         ),
         "api_key": Field(
             StringSource,
-            is_required=True,
-            description="Prefer an environment source, e.g. {env: NEWS_EMBEDDING_API_KEY}; never paste a key into run config",
+            default_value="",
+            is_required=False,
+            description="Use an environment source for hosted providers; Ollama does not require a key",
         ),
         "page_size": Field(
             Int,
@@ -92,27 +115,60 @@ def _run_tags() -> dict:
             default_value=False,
             description="Clean and chunk only; do not call embedding APIs or write pgvector",
         ),
-    },
-    description="Read licensed full-text financial news, clean, chunk, embed, and upsert idempotently to pgvector.",
-)
-def preprocess_chunk_embed_news(context):
+    }
+
+
+def _postgres_dsn_for_target(target: str) -> str:
+    base_dsn = os.getenv("POSTGRES_RAG_DSN", "").strip()
+    if not base_dsn:
+        raise RuntimeError("POSTGRES_RAG_DSN is required for vector ingestion")
+    if target == "primary":
+        return base_dsn
+    if target == "qwen":
+        return (
+            make_url(base_dsn)
+            .set(database="finsights_embeddings_qwen")
+            .render_as_string(hide_password=False)
+        )
+    raise ValueError("postgres_target must be 'primary' or 'qwen'")
+
+
+def _execute_news_embedding_op(context):
     config = context.op_config
     model = str(config["embedding_model"])
+    provider = str(config["embedding_provider"]).strip().casefold()
     account_id = (
         str(config.get("cloudflare_account_id", "")).strip()
         or os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
         or None
     )
-    if model.startswith("@cf/") and not account_id:
+    base_url = (
+        str(config.get("embedding_base_url", "")).strip()
+        or os.getenv("QWEN_EMBEDDING_BASE_URL", "").strip()
+        or None
+    )
+    if provider == "cloudflare" or (provider == "auto" and model.startswith("@cf/")):
+        if not account_id:
+            raise RuntimeError(
+                "CLOUDFLARE_ACCOUNT_ID is required when using a Cloudflare model"
+            )
+    if provider == "ollama" and not base_url:
         raise RuntimeError(
-            "CLOUDFLARE_ACCOUNT_ID is required when embedding_model starts with @cf/"
+            "embedding_base_url or QWEN_EMBEDDING_BASE_URL is required for Ollama"
         )
     summary = run_news_embedding_window(
         start_date=str(config["start_date"]),
         end_date=str(config["end_date"]),
         embedding_model=model,
-        api_key=str(config["api_key"]),
+        api_key=str(config.get("api_key", "")),
         cloudflare_account_id=account_id,
+        embedding_provider=provider,
+        embedding_base_url=base_url,
+        postgres_dsn=(
+            None
+            if bool(config["dry_run"])
+            else _postgres_dsn_for_target(str(config["postgres_target"]))
+        ),
         page_size=int(config["page_size"]),
         dry_run=bool(config["dry_run"]),
         progress=context.log.info,
@@ -120,13 +176,49 @@ def preprocess_chunk_embed_news(context):
     context.log.info("News embedding run summary: %s", summary)
 
 
+@op(
+    name="preprocess_chunk_embed_news",
+    out=Out(Nothing),
+    config_schema=_op_config_schema(),
+    description="Read licensed full-text financial news, clean, chunk, embed, and upsert idempotently to pgvector.",
+)
+def preprocess_chunk_embed_news(context):
+    _execute_news_embedding_op(context)
+
+
+@op(
+    name="preprocess_chunk_embed_news_qwen",
+    out=Out(Nothing),
+    config_schema=_op_config_schema(
+        default_start_date="2026-09-01",
+        default_end_date="2026-11-23",
+        default_model="qwen3-embedding:0.6b",
+        default_provider="ollama",
+        default_base_url="http://100.82.123.58:31434",
+        default_postgres_target="qwen",
+    ),
+    description="Backfill licensed, financially relevant news into the isolated Qwen pgvector database via the self-hosted Ollama endpoint.",
+)
+def preprocess_chunk_embed_news_qwen(context):
+    _execute_news_embedding_op(context)
+
+
 @job(
     name="news_embedding_backfill_job",
     tags=_run_tags(),
-    description="Backfill licensed financial-news chunks into the pgvector database; reruns skip unchanged content.",
+    description="Backfill licensed financial-news chunks into the primary pgvector database; reruns skip unchanged content.",
 )
 def news_embedding_backfill_job():
     preprocess_chunk_embed_news()
+
+
+@job(
+    name="news_embedding_qwen_backfill_job",
+    tags=_run_tags(),
+    description="Backfill financial news into the isolated Qwen embedding database; leaves the primary embedding database untouched.",
+)
+def news_embedding_qwen_backfill_job():
+    preprocess_chunk_embed_news_qwen()
 
 
 @schedule(
@@ -159,6 +251,6 @@ def news_embedding_daily_schedule(context):
 
 
 defs = Definitions(
-    jobs=[news_embedding_backfill_job],
+    jobs=[news_embedding_backfill_job, news_embedding_qwen_backfill_job],
     schedules=[news_embedding_daily_schedule],
 )

@@ -232,8 +232,11 @@ def run_news_embedding_window(
     start_date: str,
     end_date: str,
     embedding_model: str = "voyage-4-large",
-    api_key: str,
+    api_key: str = "",
     cloudflare_account_id: str | None = None,
+    embedding_provider: str = "auto",
+    embedding_base_url: str | None = None,
+    postgres_dsn: str | None = None,
     page_size: int = PAGE_SIZE_DEFAULT,
     dry_run: bool = False,
     store: _ChunkStore | None = None,
@@ -243,18 +246,24 @@ def run_news_embedding_window(
     """Run one resumable page at a time; each page is committed only after embeddings return."""
     if not 1 <= page_size <= 500:
         raise ValueError("page_size must be between 1 and 500")
-    if not api_key.strip() and not dry_run:
+    if (
+        embedding_provider.strip().casefold() != "ollama"
+        and not api_key.strip()
+        and not dry_run
+    ):
         raise ValueError("api_key is required unless dry_run is enabled")
     start_utc, end_utc = local_date_window_utc(start_date, end_date)
     own_store = store is None and not dry_run
     own_embedder = embedder is None and not dry_run
     if store is None and not dry_run:
-        store = NewsChunkStore()
+        store = NewsChunkStore(dsn=postgres_dsn)
     if embedder is None and not dry_run:
         embedder = EmbeddingClient(
             model=embedding_model,
             api_key=api_key,
             account_id=cloudflare_account_id,
+            provider=embedding_provider,
+            base_url=embedding_base_url,
         )
 
     counts: Counter[str] = Counter()
@@ -415,6 +424,7 @@ def run_news_embedding_window(
             "start_date": start_date,
             "end_date": end_date,
             "embedding_model": embedding_model,
+            "embedding_provider": embedding_provider,
             "dry_run": dry_run,
             "pages": batch_total,
             "counts": dict(counts),

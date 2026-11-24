@@ -16,6 +16,7 @@ VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 CLOUDFLARE_URL = (
     "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
 )
+OLLAMA_OPENAI_EMBEDDINGS_PATH = "/v1/embeddings"
 VECTOR_DIMENSIONS = 1024
 MAX_TEXTS_PER_BATCH = 64
 MAX_CONCURRENT_REQUESTS = 4
@@ -94,18 +95,26 @@ class EmbeddingClient:
         self,
         *,
         model: str,
-        api_key: str,
+        api_key: str = "",
         account_id: str | None = None,
+        provider: str = "auto",
+        base_url: str | None = None,
         timeout_seconds: float = 90,
         http_client: httpx.Client | None = None,
     ) -> None:
         self.model = model.strip()
-        self.api_key = api_key
+        self.provider = provider.strip().casefold()
+        if self.provider == "auto":
+            self.provider = "cloudflare" if self.model.startswith("@cf/") else "voyage"
+        if self.provider not in {"cloudflare", "voyage", "ollama"}:
+            raise ValueError("provider must be auto, cloudflare, voyage, or ollama")
+        self.api_key = api_key.strip()
         self.account_id = account_id
+        self.base_url = (base_url or "").strip().rstrip("/")
         self.timeout_seconds = timeout_seconds
         if not self.model:
             raise ValueError("embedding_model is required")
-        if not self.api_key:
+        if self.provider != "ollama" and not self.api_key:
             raise ValueError("api_key is required")
         if self.is_cloudflare and not self.account_id:
             raise ValueError("CLOUDFLARE_ACCOUNT_ID is required for @cf models")
@@ -114,12 +123,14 @@ class EmbeddingClient:
                 "This pgvector table requires 1024 dimensions; supported Cloudflare models are "
                 + ", ".join(sorted(CLOUDFLARE_1024D_MODELS))
             )
+        if self.provider == "ollama" and not self.base_url:
+            raise ValueError("base_url is required for the Ollama embedding provider")
         self._owned_client = http_client is None
         self.client = http_client or httpx.Client(timeout=timeout_seconds)
 
     @property
     def is_cloudflare(self) -> bool:
-        return self.model.startswith("@cf/")
+        return self.provider == "cloudflare"
 
     def close(self) -> None:
         if self._owned_client:
@@ -138,7 +149,10 @@ class EmbeddingClient:
         # Keep the response order deterministic while overlapping network latency. Four
         # concurrent calls are well below Workers AI's current text-embedding rate limit.
         with ThreadPoolExecutor(
-            max_workers=min(MAX_CONCURRENT_REQUESTS, len(batches))
+            max_workers=min(
+                1 if self.provider == "ollama" else MAX_CONCURRENT_REQUESTS,
+                len(batches),
+            )
         ) as executor:
             for batch, (vectors, tokens) in zip(
                 batches, executor.map(self._request, batches), strict=True
@@ -146,7 +160,11 @@ class EmbeddingClient:
                 _validate_vectors(
                     vectors,
                     len(batch),
-                    "Cloudflare Workers AI" if self.is_cloudflare else "Voyage",
+                    {
+                        "cloudflare": "Cloudflare Workers AI",
+                        "voyage": "Voyage",
+                        "ollama": "Ollama",
+                    }[self.provider],
                 )
                 all_vectors.extend(
                     [[float(value) for value in vector] for vector in vectors]
@@ -163,13 +181,14 @@ class EmbeddingClient:
     def _request(self, texts: list[str]) -> tuple[list[list[float]], int | None]:
         if self.is_cloudflare:
             return self._cloudflare_request(texts)
+        if self.provider == "ollama":
+            return self._ollama_request(texts)
         return self._voyage_request(texts)
 
     def _post(self, url: str, body: dict[str, Any]) -> dict[str, Any]:
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         for attempt in range(RETRIES + 1):
             try:
                 response = self.client.post(
@@ -247,15 +266,46 @@ class EmbeddingClient:
         vectors = _vectors_from_cloudflare(result)
         return vectors, _reported_tokens(payload, result)
 
+    def _ollama_request(self, texts: list[str]) -> tuple[list[list[float]], int | None]:
+        payload = self._post(
+            f"{self.base_url}{OLLAMA_OPENAI_EMBEDDINGS_PATH}",
+            {"model": self.model, "input": texts},
+        )
+        data = payload.get("data")
+        if not isinstance(data, list) or not data:
+            raise EmbeddingRequestError(
+                "Ollama returned an unrecognized embedding response"
+            )
+        try:
+            ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
+        except (AttributeError, TypeError, ValueError):
+            raise EmbeddingRequestError(
+                "Ollama returned an invalid embedding batch"
+            ) from None
+        vectors = [item.get("embedding") for item in ordered]
+        usage = payload.get("usage")
+        tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+        if not isinstance(tokens, int):
+            tokens = None
+        return vectors, tokens
+
 
 def embed_texts(
     texts: Sequence[str],
     *,
     model: str,
-    api_key: str,
+    api_key: str = "",
     account_id: str | None = None,
+    provider: str = "auto",
+    base_url: str | None = None,
 ) -> EmbeddedBatch:
-    client = EmbeddingClient(model=model, api_key=api_key, account_id=account_id)
+    client = EmbeddingClient(
+        model=model,
+        api_key=api_key,
+        account_id=account_id,
+        provider=provider,
+        base_url=base_url,
+    )
     try:
         return client.embed(texts)
     finally:
