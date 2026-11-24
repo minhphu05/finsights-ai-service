@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -157,6 +159,45 @@ def test_cloudflare_client_validates_1024d_response_without_logging_input() -> N
     url = seen.get("url")
     assert isinstance(url, str) and url.endswith("/@cf/baai/bge-m3")
     assert seen["body"] == {"text": ["bài báo thử nghiệm"]}
+
+
+def test_embedding_client_runs_batches_concurrently_and_preserves_order() -> None:
+    active = 0
+    peak_active = 0
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active, peak_active
+        texts = json.loads(request.content)["text"]
+        with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        time.sleep(0.05)
+        vectors = [[float(text)] * 1024 for text in texts]
+        with lock:
+            active -= 1
+        return httpx.Response(
+            200,
+            json={"success": True, "result": {"data": vectors}},
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = EmbeddingClient(
+        model="@cf/baai/bge-m3",
+        api_key="fake-test-key",
+        account_id="test-account",
+        http_client=http_client,
+    )
+    try:
+        result = client.embed([str(index) for index in range(130)])
+    finally:
+        client.close()
+        http_client.close()
+
+    assert result.requests == 3
+    assert len(result.vectors) == 130
+    assert [vector[0] for vector in result.vectors] == [float(i) for i in range(130)]
+    assert peak_active > 1
 
 
 def test_cloudflare_client_rejects_models_incompatible_with_vector_column() -> None:

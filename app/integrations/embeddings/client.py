@@ -6,6 +6,7 @@ import math
 import random
 import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +18,7 @@ CLOUDFLARE_URL = (
 )
 VECTOR_DIMENSIONS = 1024
 MAX_TEXTS_PER_BATCH = 64
+MAX_CONCURRENT_REQUESTS = 4
 RETRIES = 5
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 CLOUDFLARE_1024D_MODELS = {
@@ -129,22 +131,31 @@ class EmbeddingClient:
         all_vectors: list[list[float]] = []
         total_tokens: int | None = 0
         requests = 0
-        for start in range(0, len(texts), MAX_TEXTS_PER_BATCH):
-            batch = list(texts[start : start + MAX_TEXTS_PER_BATCH])
-            vectors, tokens = self._request(batch)
-            _validate_vectors(
-                vectors,
-                len(batch),
-                "Cloudflare Workers AI" if self.is_cloudflare else "Voyage",
-            )
-            all_vectors.extend(
-                [[float(value) for value in vector] for vector in vectors]
-            )
-            requests += 1
-            if tokens is None:
-                total_tokens = None
-            elif total_tokens is not None:
-                total_tokens += tokens
+        batches = [
+            list(texts[start : start + MAX_TEXTS_PER_BATCH])
+            for start in range(0, len(texts), MAX_TEXTS_PER_BATCH)
+        ]
+        # Keep the response order deterministic while overlapping network latency. Four
+        # concurrent calls are well below Workers AI's current text-embedding rate limit.
+        with ThreadPoolExecutor(
+            max_workers=min(MAX_CONCURRENT_REQUESTS, len(batches))
+        ) as executor:
+            for batch, (vectors, tokens) in zip(
+                batches, executor.map(self._request, batches), strict=True
+            ):
+                _validate_vectors(
+                    vectors,
+                    len(batch),
+                    "Cloudflare Workers AI" if self.is_cloudflare else "Voyage",
+                )
+                all_vectors.extend(
+                    [[float(value) for value in vector] for vector in vectors]
+                )
+                requests += 1
+                if tokens is None:
+                    total_tokens = None
+                elif total_tokens is not None:
+                    total_tokens += tokens
         return EmbeddedBatch(
             vectors=all_vectors, input_tokens=total_tokens, requests=requests
         )
