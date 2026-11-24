@@ -14,6 +14,7 @@ import pytest
 
 import app.ingestion.news_embedding_pipeline as pipeline
 from app.ingestion.news_embedding_pipeline import (
+    _NewsPageReader,
     _quality_eligible,
     local_date_window_utc,
     run_news_embedding_window,
@@ -32,6 +33,32 @@ def test_local_date_window_is_inclusive_in_vietnam_timezone() -> None:
 def test_local_date_window_rejects_reverse_range() -> None:
     with pytest.raises(ValueError, match="end_date"):
         local_date_window_utc("2026-11-24", "2026-11-23")
+
+
+def test_news_page_reader_disposes_pooled_connection_after_each_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeEngine:
+        disposed = 0
+
+        async def dispose(self) -> None:
+            self.disposed += 1
+
+    engine = FakeEngine()
+
+    async def fetch_page(*_args) -> list[dict[str, Any]]:
+        return [{"article_id": 17}]
+
+    monkeypatch.setattr("app.storage.mysql.engine.get_engine", lambda: engine)
+    monkeypatch.setattr(pipeline, "_fetch_page", fetch_page)
+    reader = _NewsPageReader()
+    try:
+        assert reader.fetch(datetime.now(UTC), datetime.now(UTC), 0, 10) == [
+            {"article_id": 17}
+        ]
+        assert engine.disposed == 1
+    finally:
+        reader.close()
 
 
 def test_preprocessing_removes_markup_duplicates_and_standalone_page_chrome() -> None:
@@ -293,6 +320,7 @@ def test_pipeline_upserts_once_and_skips_unchanged_chunks_on_rerun(
     monkeypatch.setattr(pipeline, "_NewsPageReader", FakeReader)
     store = FakeStore()
     embedder = FakeEmbedder()
+    progress: list[str] = []
 
     first = run_news_embedding_window(
         start_date="2026-11-01",
@@ -302,6 +330,7 @@ def test_pipeline_upserts_once_and_skips_unchanged_chunks_on_rerun(
         cloudflare_account_id="test-account",
         store=store,
         embedder=embedder,
+        progress=progress.append,
     )
     second = run_news_embedding_window(
         start_date="2026-11-01",
@@ -319,3 +348,5 @@ def test_pipeline_upserts_once_and_skips_unchanged_chunks_on_rerun(
     assert second["provider_requests"] == 0
     assert embedder.calls == 1
     assert store.persist_calls == 2
+    assert any(message.startswith("Fetching page=1") for message in progress)
+    assert any(message.startswith("Committed page=1") for message in progress)

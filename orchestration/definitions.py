@@ -106,6 +106,7 @@ def preprocess_chunk_embed_news(context):
         cloudflare_account_id=account_id,
         page_size=int(config["page_size"]),
         dry_run=bool(config["dry_run"]),
+        progress=context.log.info,
     )
     context.log.info("News embedding run summary: %s", summary)
 

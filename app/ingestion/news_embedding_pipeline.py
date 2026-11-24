@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from app.ingestion.news_preprocessing import body_skip_reason, clean_news_body
 from app.integrations.embeddings.client import (
-    MAX_TEXTS_PER_BATCH,
     EmbeddedBatch,
     EmbeddingClient,
 )
@@ -196,7 +195,15 @@ class _NewsPageReader:
         from app.storage.mysql.engine import get_engine
 
         self._engine = get_engine()
-        return self._runner.run(_fetch_page(start_utc, end_utc, after_id, page_size))
+        try:
+            return self._runner.run(
+                _fetch_page(start_utc, end_utc, after_id, page_size)
+            )
+        finally:
+            # Embedding and writing a page can leave the MySQL connection idle for a
+            # long time. Drop pooled sockets before that idle period can leave a stale
+            # connection that hangs during the next pre-ping/query.
+            self._runner.run(self._engine.dispose())
 
     def close(self) -> None:
         try:
@@ -237,6 +244,7 @@ def run_news_embedding_window(
     dry_run: bool = False,
     store: _ChunkStore | None = None,
     embedder: _Embedder | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Run one resumable page at a time; each page is committed only after embeddings return."""
     if not 1 <= page_size <= 500:
@@ -266,26 +274,32 @@ def run_news_embedding_window(
     after_id = 0
     page_reader = _NewsPageReader()
 
+    def report(message: str) -> None:
+        if progress is None:
+            logger.info(message)
+        else:
+            progress(message)
+
     try:
         if store is not None:
             store.assert_model_compatible(embedding_model)
-        logger.info(
-            "News embedding run started window=%s..%s UTC=[%s,%s) model=%s page_size=%d dry_run=%s",
-            start_date,
-            end_date,
-            start_utc.isoformat(),
-            end_utc.isoformat(),
-            embedding_model,
-            page_size,
-            dry_run,
+        report(
+            "News embedding run started "
+            f"window={start_date}..{end_date} "
+            f"UTC=[{start_utc.isoformat()},{end_utc.isoformat()}) "
+            f"model={embedding_model} page_size={page_size} dry_run={dry_run}"
         )
 
         while True:
+            report(f"Fetching page={batch_total + 1} after_id={after_id}")
             page = page_reader.fetch(start_utc, end_utc, after_id, page_size)
             if not page:
                 break
             batch_total += 1
             after_id = max(int(row["article_id"]) for row in page)
+            report(
+                f"Fetched page={batch_total} articles={len(page)} after_id={after_id}"
+            )
             candidate_rows: list[dict[str, Any]] = []
             chunks_by_uid: dict[str, list[NewsChunk]] = {}
             for row in page:
@@ -316,13 +330,11 @@ def run_news_embedding_window(
                 chunk_total += len(chunks)
 
             if dry_run:
-                logger.info(
-                    "Dry-run page=%d articles=%d eligible=%d chunks=%d after_id=%d",
-                    batch_total,
-                    len(page),
-                    len(candidate_rows),
-                    sum(len(v) for v in chunks_by_uid.values()),
-                    after_id,
+                report(
+                    f"Dry-run page={batch_total} articles={len(page)} "
+                    f"eligible={len(candidate_rows)} "
+                    f"chunks={sum(len(v) for v in chunks_by_uid.values())} "
+                    f"after_id={after_id}"
                 )
                 continue
 
@@ -347,20 +359,28 @@ def run_news_embedding_window(
                 counts["chunks_unchanged"] += len(chunks_by_uid[uid]) - len(changed)
 
             vectors_by_uid: dict[str, dict[int, list[float]]] = defaultdict(dict)
-            for start in range(0, len(changed_flat), MAX_TEXTS_PER_BATCH):
-                slice_ = changed_flat[start : start + MAX_TEXTS_PER_BATCH]
-                result = embedder.embed([chunk.text for _uid, chunk in slice_])
+            page_request_start = request_total
+            if changed_flat:
+                report(f"Embedding page={batch_total} chunks={len(changed_flat)}")
+                result = embedder.embed([chunk.text for _uid, chunk in changed_flat])
                 request_total += result.requests
                 if result.input_tokens is None:
                     provider_tokens_complete = False
                 else:
                     provider_tokens += result.input_tokens
-                for (uid, chunk), vector in zip(slice_, result.vectors, strict=True):
+                for (uid, chunk), vector in zip(
+                    changed_flat, result.vectors, strict=True
+                ):
                     vectors_by_uid[uid][chunk.chunk_index] = vector
                     counts["chunks_embedded"] += 1
+                report(
+                    f"Embedded page={batch_total} vectors={len(result.vectors)} "
+                    f"requests={result.requests}"
+                )
 
             # Commit article rows and stale-tail cleanup only after every provider request
             # for the page succeeded. Previous pages remain safely resumable by hash.
+            report(f"Persisting page={batch_total} articles={len(candidate_rows)}")
             for row in candidate_rows:
                 uid = str(row["article_uid"])
                 changed_rows = [
@@ -382,14 +402,10 @@ def run_news_embedding_window(
                 counts["chunks_upserted"] += changed_count
                 counts["articles_persisted"] += 1
 
-            logger.info(
-                "Embedding page committed page=%d read=%d eligible=%d changed_chunks=%d requests=%d after_id=%d",
-                batch_total,
-                len(page),
-                len(candidate_rows),
-                len(changed_flat),
-                request_total,
-                after_id,
+            report(
+                f"Committed page={batch_total} read={len(page)} "
+                f"eligible={len(candidate_rows)} changed_chunks={len(changed_flat)} "
+                f"requests={request_total - page_request_start} after_id={after_id}"
             )
 
         summary = {
@@ -407,7 +423,7 @@ def run_news_embedding_window(
             if provider_tokens_complete
             else None,
         }
-        logger.info("News embedding run finished summary=%s", summary)
+        report(f"News embedding run finished summary={summary}")
         return summary
     finally:
         try:
