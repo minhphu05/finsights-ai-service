@@ -8,9 +8,11 @@ from dataclasses import dataclass
 
 import psycopg
 from pgvector.psycopg import register_vector
+from psycopg import sql
 from sqlalchemy.engine import make_url
 
 TABLE = "public.news_article_chunks"
+MAX_INSERT_ROWS = 500
 
 
 @dataclass(frozen=True)
@@ -91,14 +93,14 @@ class NewsChunkStore:
             return cursor.rowcount
 
     def persist_page(self, *, articles: Sequence[dict], embedding_model: str) -> int:
-        """Commit all changed chunks in one transaction for a page of articles."""
+        """Persist a page with set-based SQL and one transaction."""
         values = []
         publication_times = []
         chunk_tails = []
         for article in articles:
             article_uid = str(article["article_uid"])
             published_at = article["published_at"]
-            publication_times.append((published_at, article_uid, published_at))
+            publication_times.append((published_at, article_uid))
             chunk_tails.append((article_uid, int(article["chunk_count"])))
             values.extend(
                 (
@@ -114,31 +116,64 @@ class NewsChunkStore:
             )
 
         with self.connection.transaction(), self.connection.cursor() as cursor:
-            if values:
-                cursor.executemany(
-                    f"""INSERT INTO {TABLE}
+            for start in range(0, len(values), MAX_INSERT_ROWS):
+                batch = values[start : start + MAX_INSERT_ROWS]
+                placeholders = sql.SQL(", ").join(
+                    [sql.SQL("(%s, %s, %s, %s, %s, %s, %s)")] * len(batch)
+                )
+                params = [value for row in batch for value in row]
+                cursor.execute(
+                    sql.SQL("""INSERT INTO {} AS current
                     (article_uid, chunk_index, published_at, text, embedding, embedding_model, content_hash)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES {}
                     ON CONFLICT (article_uid, chunk_index) DO UPDATE SET
                         published_at = EXCLUDED.published_at,
                         text = EXCLUDED.text,
                         embedding = EXCLUDED.embedding,
                         embedding_model = EXCLUDED.embedding_model,
                         content_hash = EXCLUDED.content_hash
-                    WHERE {TABLE}.content_hash IS DISTINCT FROM EXCLUDED.content_hash
-                       OR {TABLE}.embedding_model IS DISTINCT FROM EXCLUDED.embedding_model
-                       OR {TABLE}.published_at IS DISTINCT FROM EXCLUDED.published_at""",
-                    values,
+                    WHERE current.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                       OR current.embedding_model IS DISTINCT FROM EXCLUDED.embedding_model
+                       OR current.published_at IS DISTINCT FROM EXCLUDED.published_at""").format(
+                        sql.Identifier("public", "news_article_chunks"),
+                        placeholders,
+                    ),
+                    params,
                 )
             if publication_times:
-                cursor.executemany(
-                    f"UPDATE {TABLE} SET published_at = %s "
-                    "WHERE article_uid = %s AND published_at IS DISTINCT FROM %s",
-                    publication_times,
+                placeholders = sql.SQL(", ").join(
+                    [sql.SQL("(%s::timestamptz, %s::varchar(36))")]
+                    * len(publication_times)
+                )
+                params = [
+                    value
+                    for published_at, article_uid in publication_times
+                    for value in (published_at, article_uid)
+                ]
+                cursor.execute(
+                    sql.SQL("""UPDATE {} AS target
+                    SET published_at = desired.published_at
+                    FROM (VALUES {}) AS desired(published_at, article_uid)
+                    WHERE target.article_uid = desired.article_uid
+                      AND target.published_at IS DISTINCT FROM desired.published_at""").format(
+                        sql.Identifier("public", "news_article_chunks"),
+                        placeholders,
+                    ),
+                    params,
                 )
             if chunk_tails:
-                cursor.executemany(
-                    f"DELETE FROM {TABLE} WHERE article_uid = %s AND chunk_index >= %s",
-                    chunk_tails,
+                placeholders = sql.SQL(", ").join(
+                    [sql.SQL("(%s::varchar(36), %s::integer)")] * len(chunk_tails)
+                )
+                params = [value for row in chunk_tails for value in row]
+                cursor.execute(
+                    sql.SQL("""DELETE FROM {} AS target
+                    USING (VALUES {}) AS desired(article_uid, chunk_count)
+                    WHERE target.article_uid = desired.article_uid
+                      AND target.chunk_index >= desired.chunk_count""").format(
+                        sql.Identifier("public", "news_article_chunks"),
+                        placeholders,
+                    ),
+                    params,
                 )
         return len(values)
