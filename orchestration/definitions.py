@@ -72,6 +72,11 @@ def _run_tags() -> dict:
             default_value="voyage-4-large",
             description="Voyage model ID or Cloudflare @cf/... ID",
         ),
+        "cloudflare_account_id": Field(
+            String,
+            default_value="",
+            description="Optional per-run Cloudflare account ID; otherwise use CLOUDFLARE_ACCOUNT_ID",
+        ),
         "api_key": Field(
             StringSource,
             is_required=True,
@@ -93,7 +98,11 @@ def _run_tags() -> dict:
 def preprocess_chunk_embed_news(context):
     config = context.op_config
     model = str(config["embedding_model"])
-    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip() or None
+    account_id = (
+        str(config.get("cloudflare_account_id", "")).strip()
+        or os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+        or None
+    )
     if model.startswith("@cf/") and not account_id:
         raise RuntimeError(
             "CLOUDFLARE_ACCOUNT_ID is required when embedding_model starts with @cf/"

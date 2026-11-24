@@ -13,13 +13,14 @@ ops:
       start_date: "2026-11-01"
       end_date: "2026-11-23"
       embedding_model: "@cf/baai/bge-m3"
+      cloudflare_account_id: "YOUR_CLOUDFLARE_ACCOUNT_ID"
       api_key:
         env: NEWS_EMBEDDING_API_KEY
       page_size: 100
       dry_run: false
 ```
 
-The API key is resolved inside the run pod from `NEWS_EMBEDDING_API_KEY`; never place its value in Dagster run config. Cloudflare model IDs use `CLOUDFLARE_ACCOUNT_ID`. Omit `embedding_model` to use `voyage-4-large` (1024 dimensions). The pgvector table has one vector space at a time, so changing the model requires an intentional full re-embedding migration.
+The API key is resolved inside the run pod from `NEWS_EMBEDDING_API_KEY`; never place its value in Dagster run config. `cloudflare_account_id` is an optional per-run override; if omitted, Cloudflare model IDs use `CLOUDFLARE_ACCOUNT_ID` from the environment. Omit `embedding_model` to use `voyage-4-large` (1024 dimensions). The pgvector table has one vector space at a time, so changing the model requires an intentional full re-embedding migration.
 
 `start_date` and `end_date` are inclusive Vietnam calendar dates. The job converts them to `[00:00, next-day 00:00)` in `Asia/Ho_Chi_Minh`, then queries the MySQL Node 2 news source. A daily schedule is defined at 05:00 Vietnam time and processes the prior calendar day. It starts stopped until the Cloudflare/Voyage API key and PostgreSQL credentials are configured.
 
