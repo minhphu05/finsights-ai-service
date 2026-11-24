@@ -101,6 +101,7 @@ class EmbeddingClient:
         account_id: str | None = None,
         provider: str = "auto",
         base_url: str | None = None,
+        ollama_concurrency: int = 1,
         timeout_seconds: float = 90,
         progress: Callable[[str], None] | None = None,
         http_client: httpx.Client | None = None,
@@ -114,6 +115,7 @@ class EmbeddingClient:
         self.api_key = api_key.strip()
         self.account_id = account_id
         self.base_url = (base_url or "").strip().rstrip("/")
+        self.ollama_concurrency = ollama_concurrency
         self.progress = progress
         self.timeout_seconds = (
             max(timeout_seconds, OLLAMA_TIMEOUT_SECONDS)
@@ -133,6 +135,8 @@ class EmbeddingClient:
             )
         if self.provider == "ollama" and not self.base_url:
             raise ValueError("base_url is required for the Ollama embedding provider")
+        if self.provider == "ollama" and not 1 <= self.ollama_concurrency <= 4:
+            raise ValueError("ollama_concurrency must be between 1 and 4")
         self._owned_client = http_client is None
         self.client = http_client or httpx.Client(timeout=timeout_seconds)
 
@@ -159,11 +163,14 @@ class EmbeddingClient:
             list(texts[start : start + batch_size])
             for start in range(0, len(texts), batch_size)
         ]
-        # Keep the response order deterministic while overlapping network latency. Four
-        # concurrent calls are well below Workers AI's current text-embedding rate limit.
+        # executor.map preserves response order while letting providers capable of
+        # parallel inference process more than one request at a time. Ollama's server
+        # must set OLLAMA_NUM_PARALLEL to at least ollama_concurrency for this to help.
         with ThreadPoolExecutor(
             max_workers=min(
-                1 if self.provider == "ollama" else MAX_CONCURRENT_REQUESTS,
+                self.ollama_concurrency
+                if self.provider == "ollama"
+                else MAX_CONCURRENT_REQUESTS,
                 len(batches),
             )
         ) as executor:
@@ -317,6 +324,7 @@ def embed_texts(
     account_id: str | None = None,
     provider: str = "auto",
     base_url: str | None = None,
+    ollama_concurrency: int = 1,
     progress: Callable[[str], None] | None = None,
 ) -> EmbeddedBatch:
     client = EmbeddingClient(
@@ -325,6 +333,7 @@ def embed_texts(
         account_id=account_id,
         provider=provider,
         base_url=base_url,
+        ollama_concurrency=ollama_concurrency,
         progress=progress,
     )
     try:

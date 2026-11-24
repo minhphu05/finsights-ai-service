@@ -26,7 +26,7 @@ The API key is resolved inside the run pod from `NEWS_EMBEDDING_API_KEY`; never 
 
 The separate `news_embedding_qwen_backfill_job` writes to PostgreSQL database `finsights_embeddings_qwen`, leaving `finsights_embeddings` unchanged. CoreDB provisions the new database and its own `public.news_article_chunks` table with `vector(1024)`. It uses the existing restricted `finsights_embeddings_app` login, which has explicit access to both databases.
 
-The Qwen job uses the Ollama OpenAI-compatible `/v1/embeddings` endpoint. It needs no API key. The endpoint can be overridden with `embedding_base_url` or the `QWEN_EMBEDDING_BASE_URL` environment variable. Requests contain at most four chunks with a 300-second timeout to accommodate the self-hosted CPU endpoint; the job checkpoints every ten articles by default.
+The Qwen job uses the Ollama OpenAI-compatible `/v1/embeddings` endpoint. It needs no API key. The endpoint can be overridden with `embedding_base_url` or the `QWEN_EMBEDDING_BASE_URL` environment variable. Requests contain at most four chunks with a 300-second timeout. The pipeline can issue two requests concurrently; the Ollama server must also be configured with `OLLAMA_NUM_PARALLEL=2` and restarted, otherwise it queues requests serially. The job checkpoints every ten articles by default.
 
 ```yaml
 ops:
@@ -37,10 +37,21 @@ ops:
       embedding_model: "qwen3-embedding:0.6b"
       embedding_provider: "ollama"
       embedding_base_url: "http://100.82.123.58:31434"
+      ollama_concurrency: 2
       postgres_target: "qwen"
       page_size: 10
       dry_run: false
 ```
+
+On a Linux host running Ollama as a systemd service, configure server-side concurrency with a service override:
+
+```ini
+# sudo systemctl edit ollama
+[Service]
+Environment="OLLAMA_NUM_PARALLEL=2"
+```
+
+Then run `sudo systemctl daemon-reload` and `sudo systemctl restart ollama`. Confirm that the API is healthy before resuming the Dagster backfill. Two parallel contexts use more RAM than one; increase beyond two only after checking host memory and measuring throughput.
 
 Dates remain inclusive Vietnam calendar dates. This job applies the same licensed-content, financial relevance, preprocessing, and chunking rules as the primary job. The separate database lets evaluation compare models on the same article/chunk inputs without replacing the primary vectors.
 

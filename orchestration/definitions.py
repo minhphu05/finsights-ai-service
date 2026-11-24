@@ -62,6 +62,7 @@ def _op_config_schema(
     default_provider: str = "auto",
     default_base_url: str = "",
     default_postgres_target: str = "primary",
+    default_ollama_concurrency: int = 1,
     default_page_size: int = 100,
 ):
     return {
@@ -89,6 +90,14 @@ def _op_config_schema(
             String,
             default_value=default_base_url,
             description="Base URL for an OpenAI-compatible embedding endpoint such as Ollama",
+        ),
+        "ollama_concurrency": Field(
+            Int,
+            default_value=default_ollama_concurrency,
+            description=(
+                "Concurrent Ollama requests (1–4); set OLLAMA_NUM_PARALLEL to at least "
+                "this value on the Ollama host"
+            ),
         ),
         "postgres_target": Field(
             String,
@@ -166,6 +175,7 @@ def _execute_news_embedding_op(context):
         cloudflare_account_id=account_id,
         embedding_provider=provider,
         embedding_base_url=base_url,
+        ollama_concurrency=int(config["ollama_concurrency"]),
         postgres_dsn=(
             None
             if bool(config["dry_run"])
@@ -198,6 +208,7 @@ def preprocess_chunk_embed_news(context):
         default_provider="ollama",
         default_base_url="http://100.82.123.58:31434",
         default_postgres_target="qwen",
+        default_ollama_concurrency=2,
         default_page_size=10,
     ),
     description="Backfill licensed, financially relevant news into the isolated Qwen pgvector database via the self-hosted Ollama endpoint.",

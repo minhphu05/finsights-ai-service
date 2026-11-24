@@ -236,6 +236,7 @@ def run_news_embedding_window(
     cloudflare_account_id: str | None = None,
     embedding_provider: str = "auto",
     embedding_base_url: str | None = None,
+    ollama_concurrency: int = 1,
     postgres_dsn: str | None = None,
     page_size: int = PAGE_SIZE_DEFAULT,
     dry_run: bool = False,
@@ -264,6 +265,7 @@ def run_news_embedding_window(
             account_id=cloudflare_account_id,
             provider=embedding_provider,
             base_url=embedding_base_url,
+            ollama_concurrency=ollama_concurrency,
             progress=progress,
         )
 
