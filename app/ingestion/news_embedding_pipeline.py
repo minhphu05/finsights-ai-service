@@ -264,6 +264,7 @@ def run_news_embedding_window(
             account_id=cloudflare_account_id,
             provider=embedding_provider,
             base_url=embedding_base_url,
+            progress=progress,
         )
 
     counts: Counter[str] = Counter()

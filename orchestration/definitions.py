@@ -62,6 +62,7 @@ def _op_config_schema(
     default_provider: str = "auto",
     default_base_url: str = "",
     default_postgres_target: str = "primary",
+    default_page_size: int = 100,
 ):
     return {
         "start_date": Field(
@@ -107,7 +108,7 @@ def _op_config_schema(
         ),
         "page_size": Field(
             Int,
-            default_value=100,
+            default_value=default_page_size,
             description="Maximum MySQL articles held in one processing page (1–500)",
         ),
         "dry_run": Field(
@@ -197,6 +198,7 @@ def preprocess_chunk_embed_news(context):
         default_provider="ollama",
         default_base_url="http://100.82.123.58:31434",
         default_postgres_target="qwen",
+        default_page_size=10,
     ),
     description="Backfill licensed, financially relevant news into the isolated Qwen pgvector database via the self-hosted Ollama endpoint.",
 )

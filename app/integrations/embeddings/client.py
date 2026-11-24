@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import random
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -19,7 +19,9 @@ CLOUDFLARE_URL = (
 OLLAMA_OPENAI_EMBEDDINGS_PATH = "/v1/embeddings"
 VECTOR_DIMENSIONS = 1024
 MAX_TEXTS_PER_BATCH = 64
+OLLAMA_MAX_TEXTS_PER_BATCH = 4
 MAX_CONCURRENT_REQUESTS = 4
+OLLAMA_TIMEOUT_SECONDS = 300
 RETRIES = 5
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 CLOUDFLARE_1024D_MODELS = {
@@ -100,6 +102,7 @@ class EmbeddingClient:
         provider: str = "auto",
         base_url: str | None = None,
         timeout_seconds: float = 90,
+        progress: Callable[[str], None] | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         self.model = model.strip()
@@ -111,7 +114,12 @@ class EmbeddingClient:
         self.api_key = api_key.strip()
         self.account_id = account_id
         self.base_url = (base_url or "").strip().rstrip("/")
-        self.timeout_seconds = timeout_seconds
+        self.progress = progress
+        self.timeout_seconds = (
+            max(timeout_seconds, OLLAMA_TIMEOUT_SECONDS)
+            if self.provider == "ollama"
+            else timeout_seconds
+        )
         if not self.model:
             raise ValueError("embedding_model is required")
         if self.provider != "ollama" and not self.api_key:
@@ -142,9 +150,14 @@ class EmbeddingClient:
         all_vectors: list[list[float]] = []
         total_tokens: int | None = 0
         requests = 0
+        batch_size = (
+            OLLAMA_MAX_TEXTS_PER_BATCH
+            if self.provider == "ollama"
+            else MAX_TEXTS_PER_BATCH
+        )
         batches = [
-            list(texts[start : start + MAX_TEXTS_PER_BATCH])
-            for start in range(0, len(texts), MAX_TEXTS_PER_BATCH)
+            list(texts[start : start + batch_size])
+            for start in range(0, len(texts), batch_size)
         ]
         # Keep the response order deterministic while overlapping network latency. Four
         # concurrent calls are well below Workers AI's current text-embedding rate limit.
@@ -154,8 +167,9 @@ class EmbeddingClient:
                 len(batches),
             )
         ) as executor:
-            for batch, (vectors, tokens) in zip(
-                batches, executor.map(self._request, batches), strict=True
+            for batch_index, (batch, (vectors, tokens)) in enumerate(
+                zip(batches, executor.map(self._request, batches), strict=True),
+                start=1,
             ):
                 _validate_vectors(
                     vectors,
@@ -170,6 +184,11 @@ class EmbeddingClient:
                     [[float(value) for value in vector] for vector in vectors]
                 )
                 requests += 1
+                if self.progress:
+                    self.progress(
+                        f"Embedding provider batch {batch_index}/{len(batches)} complete "
+                        f"vectors={len(vectors)}"
+                    )
                 if tokens is None:
                     total_tokens = None
                 elif total_tokens is not None:
@@ -298,6 +317,7 @@ def embed_texts(
     account_id: str | None = None,
     provider: str = "auto",
     base_url: str | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> EmbeddedBatch:
     client = EmbeddingClient(
         model=model,
@@ -305,6 +325,7 @@ def embed_texts(
         account_id=account_id,
         provider=provider,
         base_url=base_url,
+        progress=progress,
     )
     try:
         return client.embed(texts)

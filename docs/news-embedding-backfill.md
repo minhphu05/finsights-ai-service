@@ -26,7 +26,7 @@ The API key is resolved inside the run pod from `NEWS_EMBEDDING_API_KEY`; never 
 
 The separate `news_embedding_qwen_backfill_job` writes to PostgreSQL database `finsights_embeddings_qwen`, leaving `finsights_embeddings` unchanged. CoreDB provisions the new database and its own `public.news_article_chunks` table with `vector(1024)`. It uses the existing restricted `finsights_embeddings_app` login, which has explicit access to both databases.
 
-The Qwen job uses the Ollama OpenAI-compatible `/v1/embeddings` endpoint. It needs no API key. The endpoint can be overridden with `embedding_base_url` or the `QWEN_EMBEDDING_BASE_URL` environment variable.
+The Qwen job uses the Ollama OpenAI-compatible `/v1/embeddings` endpoint. It needs no API key. The endpoint can be overridden with `embedding_base_url` or the `QWEN_EMBEDDING_BASE_URL` environment variable. Requests contain at most four chunks with a 300-second timeout to accommodate the self-hosted CPU endpoint; the job checkpoints every ten articles by default.
 
 ```yaml
 ops:
@@ -38,7 +38,7 @@ ops:
       embedding_provider: "ollama"
       embedding_base_url: "http://100.82.123.58:31434"
       postgres_target: "qwen"
-      page_size: 100
+      page_size: 10
       dry_run: false
 ```
 
