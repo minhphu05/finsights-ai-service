@@ -11,6 +11,8 @@ from dagster import (
     Definitions,
     Field,
     Int,
+    Nothing,
+    Out,
     RunRequest,
     String,
     StringSource,
@@ -53,6 +55,7 @@ def _run_tags() -> dict:
 
 @op(
     name="preprocess_chunk_embed_news",
+    out=Out(Nothing),
     config_schema={
         "start_date": Field(
             String,
@@ -95,7 +98,7 @@ def preprocess_chunk_embed_news(context):
         raise RuntimeError(
             "CLOUDFLARE_ACCOUNT_ID is required when embedding_model starts with @cf/"
         )
-    return run_news_embedding_window(
+    summary = run_news_embedding_window(
         start_date=str(config["start_date"]),
         end_date=str(config["end_date"]),
         embedding_model=model,
@@ -104,6 +107,7 @@ def preprocess_chunk_embed_news(context):
         page_size=int(config["page_size"]),
         dry_run=bool(config["dry_run"]),
     )
+    context.log.info("News embedding run summary: %s", summary)
 
 
 @job(
