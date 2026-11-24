@@ -1,9 +1,11 @@
+import os
 import ssl
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.settings import get_settings
@@ -52,6 +54,11 @@ def get_engine() -> AsyncEngine:
     dsn = settings.mysql_source_readonly_dsn.get_secret_value()
     if not dsn:
         raise RuntimeError("MYSQL_SOURCE_READONLY_DSN is not set")
+    # Kubernetes injects the read-only password as a Secret instead of embedding it in
+    # a URL. Local .env files can continue to supply the existing complete DSN unchanged.
+    password = os.getenv("MYSQL_AI_RO_PASSWORD", "")
+    if password and not make_url(dsn).password:
+        dsn = make_url(dsn).set(password=password).render_as_string(hide_password=False)
     return create_async_engine(
         dsn,
         pool_pre_ping=True,

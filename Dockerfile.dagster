@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/opt/finsights-ai-service
+
+WORKDIR /opt/finsights-ai-service
+
+COPY deploy/dagster-requirements.txt /tmp/dagster-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/dagster-requirements.txt \
+    && useradd --create-home --uid 10001 dagster
+
+COPY --chown=dagster:dagster app ./app
+COPY --chown=dagster:dagster orchestration ./orchestration
+COPY --chown=dagster:dagster certs ./certs
+
+USER dagster
+EXPOSE 3030
+CMD ["dagster", "api", "grpc", "-h", "0.0.0.0", "-p", "3030", "-m", "orchestration.definitions"]

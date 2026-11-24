@@ -1,0 +1,9 @@
+dagster==1.13.27
+aiomysql==0.3.2
+beautifulsoup4==4.15.0
+cryptography>=44,<51
+httpx>=0.28.1,<1
+pgvector==0.4.1
+psycopg[binary]>=3.2.3,<4
+pydantic-settings>=2.16.2,<3
+SQLAlchemy>=2.0.36,<2.1
