@@ -147,11 +147,12 @@ def _execute_news_embedding_op(context):
         or os.getenv("QWEN_EMBEDDING_BASE_URL", "").strip()
         or None
     )
-    if provider == "cloudflare" or (provider == "auto" and model.startswith("@cf/")):
-        if not account_id:
-            raise RuntimeError(
-                "CLOUDFLARE_ACCOUNT_ID is required when using a Cloudflare model"
-            )
+    if (
+        provider == "cloudflare" or (provider == "auto" and model.startswith("@cf/"))
+    ) and not account_id:
+        raise RuntimeError(
+            "CLOUDFLARE_ACCOUNT_ID is required when using a Cloudflare model"
+        )
     if provider == "ollama" and not base_url:
         raise RuntimeError(
             "embedding_base_url or QWEN_EMBEDDING_BASE_URL is required for Ollama"
