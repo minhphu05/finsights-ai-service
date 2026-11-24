@@ -274,26 +274,27 @@ def test_pipeline_upserts_once_and_skips_unchanged_chunks_on_rerun(
         ) -> Mapping[str, Mapping[int, Any]]:
             return {uid: self.saved.get(uid, {}) for uid in article_uids}
 
-        def persist_article(
+        def persist_page(
             self,
             *,
-            article_uid: str,
-            chunk_count: int,
-            changed_chunks: Sequence[dict],
+            articles: Sequence[dict],
             embedding_model: str,
-            **_kwargs,
         ) -> int:
             self.persist_calls += 1
-            self.saved[article_uid] = {
-                chunk["chunk_index"]: SimpleNamespace(
-                    chunk_index=chunk["chunk_index"],
-                    content_hash=chunk["content_hash"],
-                    embedding_model=embedding_model,
-                )
-                for chunk in changed_chunks
-            }
-            assert chunk_count >= len(changed_chunks)
-            return len(changed_chunks)
+            saved_count = 0
+            for article in articles:
+                changed_chunks = article["changed_chunks"]
+                self.saved[article["article_uid"]] = {
+                    chunk["chunk_index"]: SimpleNamespace(
+                        chunk_index=chunk["chunk_index"],
+                        content_hash=chunk["content_hash"],
+                        embedding_model=embedding_model,
+                    )
+                    for chunk in changed_chunks
+                }
+                assert article["chunk_count"] >= len(changed_chunks)
+                saved_count += len(changed_chunks)
+            return saved_count
 
         def remove_articles(self, article_uids: Sequence[str]) -> int:
             assert not article_uids

@@ -64,14 +64,8 @@ class _ChunkStore(Protocol):
 
     def remove_articles(self, article_uids: Sequence[str]) -> int: ...
 
-    def persist_article(
-        self,
-        *,
-        article_uid: str,
-        published_at: datetime | None,
-        chunk_count: int,
-        changed_chunks: Sequence[dict],
-        embedding_model: str,
+    def persist_page(
+        self, *, articles: Sequence[dict], embedding_model: str
     ) -> int: ...
 
     def close(self) -> None: ...
@@ -302,22 +296,21 @@ def run_news_embedding_window(
             )
             candidate_rows: list[dict[str, Any]] = []
             chunks_by_uid: dict[str, list[NewsChunk]] = {}
+            article_uids_to_remove: list[str] = []
             for row in page:
                 counts["articles_read"] += 1
                 source = str(row.get("source_code") or "unknown")
                 eligible, quality_reason = _quality_eligible(row)
                 if not eligible:
                     counts[quality_reason or "quality_skipped"] += 1
-                    if not dry_run and store is not None:
-                        store.remove_articles([str(row["article_uid"])])
+                    article_uids_to_remove.append(str(row["article_uid"]))
                     continue
                 chunks, clean_stats, skip_reason = _chunks_for_article(row)
                 for key, value in clean_stats.items():
                     clean_counts[key] += value
                 if skip_reason:
                     counts[skip_reason] += 1
-                    if not dry_run and store is not None:
-                        store.remove_articles([str(row["article_uid"])])
+                    article_uids_to_remove.append(str(row["article_uid"]))
                     continue
                 uid = str(row["article_uid"])
                 row["_chunks"] = chunks
@@ -328,6 +321,11 @@ def run_news_embedding_window(
                 counts["articles_eligible"] += 1
                 counts["chunks_created"] += len(chunks)
                 chunk_total += len(chunks)
+
+            if not dry_run and store is not None and article_uids_to_remove:
+                counts["chunks_removed"] += store.remove_articles(
+                    article_uids_to_remove
+                )
 
             if dry_run:
                 report(
@@ -381,6 +379,7 @@ def run_news_embedding_window(
             # Commit article rows and stale-tail cleanup only after every provider request
             # for the page succeeded. Previous pages remain safely resumable by hash.
             report(f"Persisting page={batch_total} articles={len(candidate_rows)}")
+            persisted_articles: list[dict[str, Any]] = []
             for row in candidate_rows:
                 uid = str(row["article_uid"])
                 changed_rows = [
@@ -392,15 +391,19 @@ def run_news_embedding_window(
                     }
                     for chunk in changed_by_uid[uid]
                 ]
-                changed_count = store.persist_article(
-                    article_uid=uid,
-                    published_at=row["_published_at_utc"],
-                    chunk_count=len(chunks_by_uid[uid]),
-                    changed_chunks=changed_rows,
-                    embedding_model=embedding_model,
+                persisted_articles.append(
+                    {
+                        "article_uid": uid,
+                        "published_at": row["_published_at_utc"],
+                        "chunk_count": len(chunks_by_uid[uid]),
+                        "changed_chunks": changed_rows,
+                    }
                 )
-                counts["chunks_upserted"] += changed_count
-                counts["articles_persisted"] += 1
+            counts["chunks_upserted"] += store.persist_page(
+                articles=persisted_articles,
+                embedding_model=embedding_model,
+            )
+            counts["articles_persisted"] += len(persisted_articles)
 
             report(
                 f"Committed page={batch_total} read={len(page)} "

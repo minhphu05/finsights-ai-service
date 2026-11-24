@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -91,28 +90,29 @@ class NewsChunkStore:
             )
             return cursor.rowcount
 
-    def persist_article(
-        self,
-        *,
-        article_uid: str,
-        published_at: datetime | None,
-        chunk_count: int,
-        changed_chunks: Sequence[dict],
-        embedding_model: str,
-    ) -> int:
-        """Upsert changed vectors, refresh publication time, and remove obsolete tail chunks."""
-        values = [
-            (
-                article_uid,
-                int(chunk["chunk_index"]),
-                published_at,
-                str(chunk["text"]),
-                chunk["embedding"],
-                embedding_model,
-                str(chunk["content_hash"]),
+    def persist_page(self, *, articles: Sequence[dict], embedding_model: str) -> int:
+        """Commit all changed chunks in one transaction for a page of articles."""
+        values = []
+        publication_times = []
+        chunk_tails = []
+        for article in articles:
+            article_uid = str(article["article_uid"])
+            published_at = article["published_at"]
+            publication_times.append((published_at, article_uid, published_at))
+            chunk_tails.append((article_uid, int(article["chunk_count"])))
+            values.extend(
+                (
+                    article_uid,
+                    int(chunk["chunk_index"]),
+                    published_at,
+                    str(chunk["text"]),
+                    chunk["embedding"],
+                    embedding_model,
+                    str(chunk["content_hash"]),
+                )
+                for chunk in article["changed_chunks"]
             )
-            for chunk in changed_chunks
-        ]
+
         with self.connection.transaction(), self.connection.cursor() as cursor:
             if values:
                 cursor.executemany(
@@ -130,12 +130,15 @@ class NewsChunkStore:
                        OR {TABLE}.published_at IS DISTINCT FROM EXCLUDED.published_at""",
                     values,
                 )
-            cursor.execute(
-                f"UPDATE {TABLE} SET published_at = %s WHERE article_uid = %s AND published_at IS DISTINCT FROM %s",
-                (published_at, article_uid, published_at),
-            )
-            cursor.execute(
-                f"DELETE FROM {TABLE} WHERE article_uid = %s AND chunk_index >= %s",
-                (article_uid, chunk_count),
-            )
+            if publication_times:
+                cursor.executemany(
+                    f"UPDATE {TABLE} SET published_at = %s "
+                    "WHERE article_uid = %s AND published_at IS DISTINCT FROM %s",
+                    publication_times,
+                )
+            if chunk_tails:
+                cursor.executemany(
+                    f"DELETE FROM {TABLE} WHERE article_uid = %s AND chunk_index >= %s",
+                    chunk_tails,
+                )
         return len(values)
