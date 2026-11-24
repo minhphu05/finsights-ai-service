@@ -278,7 +278,7 @@ class EmbeddingClient:
             )
         try:
             ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
-        except (AttributeError, TypeError, ValueError):
+        except AttributeError, TypeError, ValueError:
             raise EmbeddingRequestError(
                 "Ollama returned an invalid embedding batch"
             ) from None
