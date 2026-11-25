@@ -192,6 +192,15 @@ integration.
 uv run --env-file .env uvicorn app.main:app --reload
 ```
 
+The standalone FastAPI runtime is packaged separately from the Dagster code server with
+`Dockerfile.api` and listens on port `8081`. In Kubernetes it is an internal `ClusterIP`
+service (`finsights-ai-api`); the backend gateway calls the session endpoints after
+validating the user's JWT. User chat traffic is sent through the session routes so histories
+are stored in Node 1 (`MYSQL_CHAT_DSN`); source-news reads use Node 2
+(`MYSQL_SOURCE_READONLY_DSN`). Both MySQL connections use TLS CA files packaged with the
+image. The agent uses `DEEPSEEK_API_KEY` for its configured profile. The Dagster code server
+remains on its existing port `3030` and image workflow.
+
 Restart the server after changing `.env` or `models.yaml`; both are cached.
 Open `http://127.0.0.1:8000/docs`, or send a request:
 

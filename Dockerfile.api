@@ -1,0 +1,23 @@
+FROM python:3.14-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/finsights-ai-service/.venv \
+    PYTHONPATH=/opt/finsights-ai-service \
+    AI_MODELS_FILE=/opt/finsights-ai-service/configs/models.yaml
+
+WORKDIR /opt/finsights-ai-service
+
+RUN pip install --no-cache-dir uv \
+    && useradd --create-home --uid 10001 ai-service
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY --chown=ai-service:ai-service app ./app
+COPY --chown=ai-service:ai-service configs ./configs
+COPY --chown=ai-service:ai-service certs ./certs
+
+USER ai-service
+EXPOSE 8081
+CMD ["/opt/finsights-ai-service/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8081"]

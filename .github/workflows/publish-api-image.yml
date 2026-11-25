@@ -1,0 +1,51 @@
+name: Publish AI HTTP API image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "configs/**"
+      - "certs/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Dockerfile.api"
+      - ".github/workflows/publish-api-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: finsights-ai-api-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/minhphu05/finsights-ai-service
+          tags: |
+            type=raw,value=api-latest
+            type=sha,format=long,prefix=api-
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -80,6 +80,11 @@ def get_chat_engine() -> AsyncEngine:
     dsn = settings.mysql_chat_dsn.get_secret_value()
     if not dsn:
         raise RuntimeError("MYSQL_CHAT_DSN is not set")
+    password = os.getenv("MYSQL_AI_APP_PASSWORD", "")
+    if password and not make_url(dsn).password:
+        dsn = make_url(dsn).set(password=password).render_as_string(
+            hide_password=False
+        )
     return create_async_engine(
         dsn,
         pool_pre_ping=True,
