@@ -1,9 +1,10 @@
 """Model catalog: which model configs exist, and which one each (provider profile, tier) uses.
 
-Loaded from a JSON file (`app/models.json`, or `AI_MODELS_FILE`). It holds no keys, only
-`api_key_ref`s. `${NAME}` in `model` / `base_url` is read from the environment when a config is
-selected, so a provider whose model is not chosen yet (OPENAI_MODEL, gate B-01) fails only when
-used. The Director's admin dashboard will replace the file later.
+Loaded from the `llm` section of `configs/models.yaml` (or `AI_MODELS_FILE`), the same file
+that lists the embedding and rerank models. It holds no keys, only `api_key_ref`s. `${NAME}` in
+`model` / `base_url` is read from the environment when a config is selected, so a provider whose
+model is not chosen yet (OPENAI_MODEL, gate B-01) fails only when used. The Director's admin
+dashboard will replace the file later.
 """
 
 import os
@@ -14,10 +15,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.integrations.llm.config import ModelConfig, ModelConfigError, resolve_api_key
+from app.integrations.providers import read_models_file
 
 Tier = Literal["strong", "standard", "cheap"]
 TIERS: tuple[Tier, ...] = ("strong", "standard", "cheap")
-DEFAULT_FILE = Path(__file__).resolve().parents[2] / "models.json"
 
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -71,8 +72,7 @@ class Catalog(BaseModel):
 
 
 def load_catalog(path: str | Path | None = None) -> Catalog:
-    source = Path(path or os.environ.get("AI_MODELS_FILE") or DEFAULT_FILE)
-    return Catalog.model_validate_json(source.read_text(encoding="utf-8"))
+    return Catalog.model_validate(read_models_file(path)["llm"])
 
 
 def _expand(value: str) -> str:

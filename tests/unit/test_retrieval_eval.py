@@ -98,7 +98,7 @@ def test_dataset_is_well_formed() -> None:
 
 @pytest.mark.anyio
 async def test_dense_search_reads_the_best_chunks_of_each_article(monkeypatch) -> None:
-    from app.integrations.voyage import embeddings
+    from app.integrations.embeddings import online as embeddings
 
     async def fake_embed(texts, input_type, **kwargs):
         return embeddings.Embeddings([[1.0, 0.0]], 1)

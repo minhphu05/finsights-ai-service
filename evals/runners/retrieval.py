@@ -213,7 +213,7 @@ async def _cached_rerank(
     Rerankers cost per call and give the same answer for the same input, so a rerun, or a
     sweep of gate thresholds over the same chunks, pays once. `name` holds the model version.
     """
-    from app.integrations.voyage.rerank import Reranked
+    from app.integrations.rerank import Reranked
 
     global _rerank_cache
     path = SNAPSHOTS / "rerank_cache.jsonl"
@@ -341,19 +341,19 @@ class DenseIndex:
 
     async def _vectors(self, name: str, texts: list[str]) -> list[array[float]]:
         """Unit vectors of `texts`, from the snapshot of this exact list when there is one."""
-        from app.core.settings import get_settings
-        from app.integrations.voyage.embeddings import embed
+        from app.integrations.embeddings.online import embed
+        from app.integrations.providers import get_provider
 
-        settings = get_settings()
+        provider = get_provider("embedding")
         digest = hashlib.sha256("\x00".join(texts).encode()).hexdigest()[:16]
         data = (
             SNAPSHOTS
             / (
-                f"{name}_{settings.embedding_model}_{settings.embedding_dimensions}_"
+                f"{name}_{provider.model}_{provider.dimensions}_"
                 f"{self.date_from}_{self.date_to}_{digest}"
             )
         ).with_suffix(".f32")
-        dims = settings.embedding_dimensions
+        dims = provider.dimensions
         if data.exists():
             flat = array("f")
             flat.frombytes(data.read_bytes())
@@ -380,7 +380,7 @@ class DenseIndex:
         whole list (`jev-list`). `gate`: when above 0, Jev is asked of every chunk in the
         ranked results whether it answers the question; chunks scoring below `gate` are dropped,
         and so are articles left with none. It only removes, never adds."""
-        from app.integrations.voyage.embeddings import embed
+        from app.integrations.embeddings.online import embed
         from app.rag.retrieval.bm25 import Bm25Index, reciprocal_rank_fusion
         from app.tools.sql.search_news import vn_day_start_utc
 
@@ -420,20 +420,22 @@ class DenseIndex:
         if rerank_pool:
             # The `rerank_pool` chunks closest to the question go to the reranker, which reads
             # question and chunk together and replaces the vector similarity as the score.
+            from app.integrations import rerank as voyage
             from app.integrations.jev import client as jev
-            from app.integrations.voyage import rerank as voyage
+            from app.integrations.providers import get_provider
 
             # RERANK_MODEL picks another Voyage reranker (say a cheaper one); the cache name
             # carries the model, so results of different models never mix.
-            voyage_model = os.environ.get("RERANK_MODEL", voyage.MODEL)
+            voyage_model = os.environ.get("RERANK_MODEL", get_provider("rerank").model)
+            jev_model = jev.MODEL
 
             async def voyage_rerank(query: str, texts: Sequence[str]) -> Any:
                 return await voyage.rerank(query, texts, model=voyage_model)
 
             rerankers = {
                 "voyage": (f"voyage:{voyage_model}", voyage_rerank),
-                "jev-point": (f"jev-point:{jev.MODEL}", jev.rerank_pointwise),
-                "jev-list": (f"jev-list:{jev.MODEL}", jev.rerank_listwise),
+                "jev-point": (f"jev-point:{jev_model}", jev.rerank_pointwise),
+                "jev-list": (f"jev-list:{jev_model}", jev.rerank_listwise),
             }
             pool = heapq.nlargest(
                 rerank_pool,

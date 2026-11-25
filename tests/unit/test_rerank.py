@@ -2,18 +2,16 @@ import json
 
 import httpx
 import pytest
-from pydantic import SecretStr
 
-from app.core.settings import get_settings
-from app.integrations.voyage import rerank as mod
-from app.integrations.voyage.embeddings import EmbeddingError
+from app.integrations import rerank as mod
+from app.integrations.embeddings.online import EmbeddingError
 
 KEY = "pa-secret-key-for-tests"
 
 
 @pytest.fixture(autouse=True)
 def key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "voyage_api_key", SecretStr(KEY))
+    monkeypatch.setenv("VOYAGE_API_KEY", KEY)
     monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
 
 
@@ -87,6 +85,6 @@ async def test_nothing_to_rerank_makes_no_request() -> None:
 async def test_missing_key_and_too_many_documents_fail_early(monkeypatch) -> None:
     with pytest.raises(ValueError):
         await mod.rerank("q", ["a"] * (mod.MAX_DOCUMENTS + 1))
-    monkeypatch.setattr(get_settings(), "voyage_api_key", SecretStr(""))
+    monkeypatch.setenv("VOYAGE_API_KEY", "")
     with pytest.raises(EmbeddingError, match="not set"):
         await mod.rerank("q", ["a"])

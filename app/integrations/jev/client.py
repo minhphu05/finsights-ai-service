@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 
 from app.core.settings import get_settings
-from app.integrations.voyage.rerank import Reranked
+from app.integrations.rerank import Reranked
 
 logger = logging.getLogger(__name__)
 

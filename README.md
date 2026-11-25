@@ -30,7 +30,7 @@ dependencies. See [Architecture](docs/architecture.md) for system boundaries and
 | HTTP API and streaming | FastAPI, Pydantic, server-sent events (SSE) | `app/api/`, `app/schemas/` |
 | Workflow orchestration | LangGraph state, nodes, conditional edges, and checkpoints | `app/graph/` |
 | Models and tools | LangChain and provider integrations | `app/tools/`, `app/integrations/` |
-| Embeddings | Voyage AI API | `app/integrations/voyage/` |
+| Embeddings and reranking | Voyage AI API | `app/integrations/embeddings/`, `app/integrations/rerank.py` |
 | Hybrid retrieval | PostgreSQL, pgvector, lexical search, RRF, and reranking | `app/rag/` |
 | Decision services | Jev adapter with interchangeable baselines | `app/integrations/jev/`, `app/decisions/` |
 | Offline orchestration | Dagster assets, jobs, schedules, and sensors | `orchestration/` |
@@ -166,7 +166,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
 Copy the example only when `.env` does not already exist. Models are declared in
-[`app/models.json`](app/models.json) (override the path with `AI_MODELS_FILE`). Set the
+[`configs/models.yaml`](configs/models.yaml), with the embedding and rerank models (override the path with `AI_MODELS_FILE`). Set the
 API key of each provider you want to use in `.env`:
 
 ```dotenv
@@ -178,7 +178,7 @@ DEEPSEEK_API_KEY=your-api-key
 
 `/chat` picks a model with the `profile` and `tier` query parameters. A profile is a
 provider (`anthropic`, `openai`, `deepseek`) and a tier is `strong`, `standard`
-(default) or `cheap`; `models.json` maps each pair to a model config. Each config
+(default) or `cheap`; the `llm` section of `models.yaml` maps each pair to a model config. Each config
 names a dialect (`anthropic`, `openai_responses`, `openai_compat`) that
 `app/integrations/llm/factory.py` turns into a LangChain chat model. Keys are read
 from the environment variable named by `api_key_ref`, so they are not interchangeable
@@ -192,7 +192,7 @@ integration.
 uv run --env-file .env uvicorn app.main:app --reload
 ```
 
-Restart the server after changing `.env` or `models.json`; both are cached.
+Restart the server after changing `.env` or `models.yaml`; both are cached.
 Open `http://127.0.0.1:8000/docs`, or send a request:
 
 ```powershell
