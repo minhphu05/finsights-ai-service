@@ -34,7 +34,7 @@ def entries() -> dict[str, dict[str, str]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except OSError, ValueError:
+    except (OSError, ValueError):
         # No file content in the message: it holds keys.
         raise KeyStoreError(f"cannot read the key file {path.name}") from None
     if not isinstance(data, dict):
