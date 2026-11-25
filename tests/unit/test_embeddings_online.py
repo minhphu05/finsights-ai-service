@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import httpx
 import pytest
@@ -155,7 +156,7 @@ async def test_cloudflare_missing_account_id_fails_before_any_request(
 def test_an_embedding_model_needs_a_dialect_and_cloudflare_an_account() -> None:
     from app.integrations.providers import ProviderConfig
 
-    base = {
+    base: dict[str, Any] = {
         "id": "m",
         "kind": "embedding",
         "model": "m",
