@@ -1,0 +1,103 @@
+# Every model the service can call, in three sections: embedding, rerank and llm.
+# Add a model by adding an entry; switch the one in use with `default` (embedding, rerank)
+# or `profiles` (llm). No keys here, only `api_key_ref` (env:NAME, read from the environment
+# or .env). Override the file with AI_MODELS_FILE. Jev is not here: it has its own module
+# (app/integrations/jev). Restart the server after a change; the file is cached.
+
+embedding:
+  default: voyage-4
+  models:
+    # `dialect` is the API the model speaks: voyage | cloudflare.
+    - id: voyage-4
+      dialect: voyage
+      model: voyage-4
+      url: https://api.voyageai.com/v1/embeddings
+      api_key_ref: env:VOYAGE_API_KEY
+      # Must match the pgvector column.
+      dimensions: 1024
+
+    # Cloudflare Workers AI, 1024 dimensions. Select it with `default: bge-m3`.
+    - id: bge-m3
+      dialect: cloudflare
+      model: "@cf/baai/bge-m3"
+      url: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
+      api_key_ref: env:CLOUDFLARE_API_TOKEN
+      account_id_ref: env:CLOUDFLARE_ACCOUNT_ID
+
+rerank:
+  default: rerank-3
+  models:
+    - id: rerank-3
+      model: rerank-3
+      url: https://api.voyageai.com/v1/rerank
+      api_key_ref: env:VOYAGE_API_KEY
+
+llm:
+  # `${NAME}` in model / base_url is read from the environment when a config is selected, so a
+  # provider whose model is not chosen yet fails only when used.
+  models:
+    - id: claude-opus
+      dialect: anthropic
+      model: claude-opus-5-5
+      api_key_ref: env:ANTHROPIC_API_KEY
+      fallbacks: default
+      price_input_per_mtok: 4.0
+      price_output_per_mtok: 20.0
+
+    - id: claude-sonnet
+      dialect: anthropic
+      model: claude-sonnet-5-5
+      api_key_ref: env:ANTHROPIC_API_KEY
+      fallbacks: default
+      price_input_per_mtok: 2.0
+      price_output_per_mtok: 10.0
+
+    - id: claude-haiku
+      dialect: anthropic
+      model: claude-haiku-5-5
+      api_key_ref: env:ANTHROPIC_API_KEY
+      price_input_per_mtok: 0.1
+      price_output_per_mtok: 0.5
+
+    - id: gpt-main
+      dialect: openai_responses
+      model: "${OPENAI_MODEL}"
+      api_key_ref: env:OPENAI_API_KEY
+      price_input_per_mtok: 0.042
+      price_output_per_mtok: 0
+
+    - id: deepseek-pro
+      dialect: openai_compat
+      model: deepseek-v4-pro
+      base_url: https://api.deepseek.com
+      api_key_ref: env:DEEPSEEK_API_KEY
+      capabilities: {send_reasoning_back: true}
+      price_input_per_mtok: 0.66
+      price_output_per_mtok: 1.98
+      peak:
+        price_input_per_mtok: 1.32
+        price_output_per_mtok: 3.96
+        utc_offset_hours: 7
+        weekdays: [0, 1, 2, 3, 4]
+        hours: ["08:00-11:00", "13:00-17:00"]
+
+    - id: deepseek-flash
+      dialect: openai_compat
+      model: deepseek-v4-flash
+      base_url: https://api.deepseek.com
+      api_key_ref: env:DEEPSEEK_API_KEY
+      capabilities: {send_reasoning_back: true}
+      price_input_per_mtok: 0.15
+      price_output_per_mtok: 0.60
+      peak:
+        price_input_per_mtok: 0.30
+        price_output_per_mtok: 1.20
+        utc_offset_hours: 7
+        weekdays: [0, 1, 2, 3, 4]
+        hours: ["08:00-11:00", "13:00-17:00"]
+
+  # Provider profile -> model id per tier
+  profiles:
+    anthropic: {strong: claude-sonnet, standard: claude-sonnet, cheap: claude-haiku}
+    openai: {strong: gpt-main, standard: gpt-main, cheap: gpt-main}
+    deepseek: {strong: deepseek-pro, standard: deepseek-flash, cheap: deepseek-flash}

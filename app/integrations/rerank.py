@@ -17,18 +17,16 @@ from dataclasses import dataclass
 
 import httpx
 
-from app.core.settings import get_settings
-from app.integrations.voyage.embeddings import (
+from app.integrations.embeddings.online import (
     MAX_BACKOFF_SECONDS,
     RETRIES,
     RETRY_STATUSES,
     EmbeddingError,
 )
+from app.integrations.providers import ProviderConfigError, get_provider
 
 logger = logging.getLogger(__name__)
 
-URL = "https://api.voyageai.com/v1/rerank"
-MODEL = "rerank-3"
 # API limit: at most 1,000 documents, and (query tokens x documents + document tokens) <= 600K.
 MAX_DOCUMENTS = 200
 
@@ -44,32 +42,43 @@ async def rerank(
     query: str,
     documents: Sequence[str],
     *,
-    model: str = MODEL,
+    model: str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> Reranked:
-    """Score `documents` against `query`; every document comes back, best first."""
-    key = get_settings().voyage_api_key.get_secret_value()
-    if not key:
-        raise EmbeddingError("VOYAGE_API_KEY is not set")
+    """Score `documents` against `query`; every document comes back, best first.
+
+    `model` overrides the model of the default rerank provider (the eval compares models).
+    """
+    provider = get_provider("rerank")
+    try:
+        key = provider.api_key()
+    except ProviderConfigError as exc:
+        raise EmbeddingError(str(exc)) from None
     if not documents:
         return Reranked([], 0)
     if len(documents) > MAX_DOCUMENTS:
         raise ValueError(f"at most {MAX_DOCUMENTS} documents per call")
-    payload = {"query": query, "documents": list(documents), "model": model}
+    payload = {
+        "query": query,
+        "documents": list(documents),
+        "model": model or provider.model,
+    }
     owned = client is None
     client = client or httpx.AsyncClient(timeout=60)
     try:
-        return await _post(client, key, payload)
+        return await _post(client, provider.url, key, payload)
     finally:
         if owned:
             await client.aclose()
 
 
-async def _post(client: httpx.AsyncClient, key: str, payload: dict) -> Reranked:
+async def _post(
+    client: httpx.AsyncClient, url: str, key: str, payload: dict
+) -> Reranked:
     for attempt in range(RETRIES + 1):
         try:
             response = await client.post(
-                URL, json=payload, headers={"Authorization": f"Bearer {key}"}
+                url, json=payload, headers={"Authorization": f"Bearer {key}"}
             )
         except httpx.TransportError as exc:
             if attempt == RETRIES:

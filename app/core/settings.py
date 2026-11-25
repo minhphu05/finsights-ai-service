@@ -29,12 +29,10 @@ class Settings(BaseSettings):
     quota_five_hour_tokens: int = Field(default=150_000, ge=0)
     quota_weekly_tokens: int = Field(default=1_500_000, ge=0)
 
-    # Text embeddings for retrieval (app/integrations/voyage/embeddings.py).
-    voyage_api_key: SecretStr = SecretStr("")
+    # Embedding and rerank providers live in configs/models.yaml
+    # (app/integrations/providers.py).
     # Jev, a TypeSafe System One decision model (app/integrations/jev/client.py).
     typesafe_api_key: SecretStr = SecretStr("")
-    embedding_model: str = "voyage-4"
-    embedding_dimensions: int = Field(default=1024, ge=256, le=2048)
 
     mysql_source_readonly_dsn: SecretStr = SecretStr("")
     # Node 1 finsights_ai: chat sessions and messages (read/write account).

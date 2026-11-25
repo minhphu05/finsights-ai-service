@@ -2,17 +2,15 @@ import json
 
 import httpx
 import pytest
-from pydantic import SecretStr
 
-from app.core.settings import get_settings
-from app.integrations.voyage import embeddings as mod
+from app.integrations.embeddings import online as mod
 
 KEY = "pa-secret-key-for-tests"
 
 
 @pytest.fixture(autouse=True)
 def key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "voyage_api_key", SecretStr(KEY))
+    monkeypatch.setenv("VOYAGE_API_KEY", KEY)
     monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
 
 
@@ -95,10 +93,76 @@ async def test_client_error_is_not_retried_and_hides_the_key() -> None:
 
 @pytest.mark.anyio
 async def test_missing_key_fails_before_any_request(monkeypatch) -> None:
-    monkeypatch.setattr(get_settings(), "voyage_api_key", SecretStr(""))
+    monkeypatch.setenv("VOYAGE_API_KEY", "")
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("no request expected")
 
     with pytest.raises(mod.EmbeddingError, match="not set"):
         await mod.embed(["q"], "query", client=_client(handler))
+
+
+def _cloudflare(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.integrations.providers import ProviderConfig
+
+    provider = ProviderConfig(
+        id="bge-m3",
+        kind="embedding",
+        dialect="cloudflare",
+        model="@cf/baai/bge-m3",
+        url="https://cf.test/accounts/{account_id}/ai/run/{model}",
+        api_key_ref="env:CF_TOKEN",
+        account_id_ref="env:CF_ACCOUNT",
+    )
+    monkeypatch.setenv("CF_TOKEN", KEY)
+    monkeypatch.setenv("CF_ACCOUNT", "acc-1")
+    monkeypatch.setattr(mod, "get_provider", lambda kind: provider)
+
+
+@pytest.mark.anyio
+async def test_cloudflare_dialect_uses_its_url_body_and_batch_size(monkeypatch) -> None:
+    _cloudflare(monkeypatch)
+    seen: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append((str(request.url), body))
+        vectors = [[float(i), 1.0] for i in range(len(body["text"]))]
+        return httpx.Response(200, json={"success": True, "result": {"data": vectors}})
+
+    result = await mod.embed(["t"] * 70, "document", client=_client(handler))
+
+    assert len(result.vectors) == 70 and result.tokens == 0
+    assert [len(b["text"]) for _, b in seen] == [64, 6]
+    assert seen[0][0] == "https://cf.test/accounts/acc-1/ai/run/@cf/baai/bge-m3"
+    assert "model" not in seen[0][1] and "input_type" not in seen[0][1]
+
+
+@pytest.mark.anyio
+async def test_cloudflare_missing_account_id_fails_before_any_request(
+    monkeypatch,
+) -> None:
+    _cloudflare(monkeypatch)
+    monkeypatch.setenv("CF_ACCOUNT", "")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request expected")
+
+    with pytest.raises(mod.EmbeddingError, match="CF_ACCOUNT is not set"):
+        await mod.embed(["q"], "query", client=_client(handler))
+
+
+def test_an_embedding_model_needs_a_dialect_and_cloudflare_an_account() -> None:
+    from app.integrations.providers import ProviderConfig
+
+    base = {
+        "id": "m",
+        "kind": "embedding",
+        "model": "m",
+        "url": "u",
+        "api_key_ref": "env:K",
+    }
+    with pytest.raises(ValueError, match="needs a dialect"):
+        ProviderConfig(**base)
+    with pytest.raises(ValueError, match="account_id_ref"):
+        ProviderConfig(**base, dialect="cloudflare")

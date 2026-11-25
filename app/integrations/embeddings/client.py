@@ -41,7 +41,7 @@ class EmbeddedBatch:
     requests: int = 1
 
 
-def _vectors_from_cloudflare(result: dict[str, Any]) -> list[list[float]]:
+def vectors_from_cloudflare(result: dict[str, Any]) -> list[list[float]]:
     for field in ("response", "data", "embeddings"):
         value = result.get(field)
         if not isinstance(value, list):
@@ -78,7 +78,7 @@ def _validate_vectors(vectors: list[list[float]], expected: int, provider: str) 
             )
 
 
-def _reported_tokens(payload: dict[str, Any], result: dict[str, Any]) -> int | None:
+def reported_tokens(payload: dict[str, Any], result: dict[str, Any]) -> int | None:
     candidates = [payload.get("usage"), result.get("usage"), result.get("meta")]
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -289,8 +289,8 @@ class EmbeddingClient:
             raise EmbeddingRequestError(
                 "Cloudflare returned an unrecognized embedding response"
             )
-        vectors = _vectors_from_cloudflare(result)
-        return vectors, _reported_tokens(payload, result)
+        vectors = vectors_from_cloudflare(result)
+        return vectors, reported_tokens(payload, result)
 
     def _ollama_request(self, texts: list[str]) -> tuple[list[list[float]], int | None]:
         payload = self._post(
