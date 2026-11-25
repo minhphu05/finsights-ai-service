@@ -18,7 +18,8 @@ from fastapi import APIRouter
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
-from app.core.settings import get_settings
+from app.api.routes.keys import JEV_KEY
+from app.integrations import key_store
 from app.integrations.embeddings.online import build_request
 from app.integrations.jev import client as jev
 from app.integrations.llm.catalog import TIERS, Catalog, load_catalog
@@ -44,6 +45,8 @@ class ProviderHealth(BaseModel):
     model: str
     # The one the service uses for its kind
     default: bool
+    # Names of the saved keys it needs (see /admin/keys)
+    keys: list[str]
     latency_ms: int | None = None
     # A short reason; never a key, a response body or submitted text.
     detail: str | None = None
@@ -53,8 +56,13 @@ class LlmProfileHealth(BaseModel):
     status: Status
     # tier -> model name (a tier is missing when it cannot be resolved)
     models: dict[str, str]
+    keys: list[str]
     latency_ms: int | None = None
     detail: str | None = None
+
+
+def _names(*refs: str | None) -> list[str]:
+    return list(dict.fromkeys(ref.partition(":")[2] for ref in refs if ref))
 
 
 class ProvidersHealth(BaseModel):
@@ -85,6 +93,7 @@ async def _probe(
             status=status,
             model=provider.model,
             default=default,
+            keys=_names(provider.api_key_ref, provider.account_id_ref),
             **extra,
         )
 
@@ -116,11 +125,18 @@ async def _probe_jev(client: httpx.AsyncClient) -> ProviderHealth:
 
     def result(status: Status, **extra: Any) -> ProviderHealth:
         return ProviderHealth(
-            id="jev", status=status, model=jev.MODEL, default=True, **extra
+            id="jev",
+            status=status,
+            model=jev.MODEL,
+            default=True,
+            keys=[JEV_KEY],
+            **extra,
         )
 
-    if not get_settings().typesafe_api_key.get_secret_value():
-        return result("not_configured", detail="TYPESAFE_API_KEY is not set")
+    try:
+        key_store.resolve(f"key:{JEV_KEY}")
+    except key_store.KeyStoreError as exc:
+        return result("not_configured", detail=str(exc))
     start = time.perf_counter()
     try:
         async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
@@ -138,15 +154,19 @@ async def _probe_jev(client: httpx.AsyncClient) -> ProviderHealth:
 
 async def _llm_profile(profile: str, catalog: Catalog, live: bool) -> LlmProfileHealth:
     models: dict[str, str] = {}
+    used = set(catalog.profiles[profile].values())
+    keys = _names(*(m.api_key_ref for m in catalog.models if m.id in used))
     try:
         for tier in TIERS:
             config = catalog.select(profile, tier)
             models[tier] = config.model
             resolve_api_key(config.api_key_ref)
     except ModelConfigError as exc:
-        return LlmProfileHealth(status="not_configured", models=models, detail=str(exc))
+        return LlmProfileHealth(
+            status="not_configured", models=models, keys=keys, detail=str(exc)
+        )
     if not live:
-        return LlmProfileHealth(status="ok", models=models)
+        return LlmProfileHealth(status="ok", models=models, keys=keys)
     start = time.perf_counter()
     try:
         async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
@@ -154,14 +174,17 @@ async def _llm_profile(profile: str, catalog: Catalog, live: bool) -> LlmProfile
                 [HumanMessage(content="ping")]
             )
     except TimeoutError:
-        return LlmProfileHealth(status="error", models=models, detail="timed out")
+        return LlmProfileHealth(
+            status="error", models=models, keys=keys, detail="timed out"
+        )
     except Exception as exc:  # noqa: BLE001 - provider errors may carry credentials
         return LlmProfileHealth(
-            status="error", models=models, detail=type(exc).__name__
+            status="error", models=models, keys=keys, detail=type(exc).__name__
         )
     return LlmProfileHealth(
         status="ok",
         models=models,
+        keys=keys,
         latency_ms=round((time.perf_counter() - start) * 1000),
     )
 

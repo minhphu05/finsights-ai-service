@@ -30,9 +30,7 @@ class Settings(BaseSettings):
     quota_weekly_tokens: int = Field(default=1_500_000, ge=0)
 
     # Embedding and rerank providers live in configs/models.yaml
-    # (app/integrations/providers.py).
-    # Jev, a TypeSafe System One decision model (app/integrations/jev/client.py).
-    typesafe_api_key: SecretStr = SecretStr("")
+    # (app/integrations/providers.py); provider keys in app/integrations/key_store.py.
 
     mysql_source_readonly_dsn: SecretStr = SecretStr("")
     # Node 1 finsights_ai: chat sessions and messages (read/write account).

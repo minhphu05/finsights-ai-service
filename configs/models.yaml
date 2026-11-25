@@ -1,7 +1,7 @@
 # Every model the service can call, in three sections: embedding, rerank and llm.
 # Add a model by adding an entry; switch the one in use with `default` (embedding, rerank)
-# or `profiles` (llm). No keys here, only `api_key_ref` (env:NAME, read from the environment
-# or .env). Override the file with AI_MODELS_FILE. Jev is not here: it has its own module
+# or `profiles` (llm). No keys here, only `api_key_ref` (key:<name>, a key saved from the
+# admin page, see app/integrations/key_store.py). Override the file with AI_MODELS_FILE. Jev is not here: it has its own module
 # (app/integrations/jev). Restart the server after a change; the file is cached.
 
 embedding:
@@ -12,7 +12,7 @@ embedding:
       dialect: voyage
       model: voyage-4
       url: https://api.voyageai.com/v1/embeddings
-      api_key_ref: env:VOYAGE_API_KEY
+      api_key_ref: key:voyage
       # Must match the pgvector column.
       dimensions: 1024
 
@@ -21,8 +21,8 @@ embedding:
       dialect: cloudflare
       model: "@cf/baai/bge-m3"
       url: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
-      api_key_ref: env:CLOUDFLARE_API_TOKEN
-      account_id_ref: env:CLOUDFLARE_ACCOUNT_ID
+      api_key_ref: key:cloudflare
+      account_id_ref: key:cloudflare_account_id
 
 rerank:
   default: rerank-3
@@ -30,7 +30,7 @@ rerank:
     - id: rerank-3
       model: rerank-3
       url: https://api.voyageai.com/v1/rerank
-      api_key_ref: env:VOYAGE_API_KEY
+      api_key_ref: key:voyage
 
 llm:
   # `${NAME}` in model / base_url is read from the environment when a config is selected, so a
@@ -39,7 +39,7 @@ llm:
     - id: claude-opus
       dialect: anthropic
       model: claude-opus-5-5
-      api_key_ref: env:ANTHROPIC_API_KEY
+      api_key_ref: key:anthropic
       fallbacks: default
       price_input_per_mtok: 4.0
       price_output_per_mtok: 20.0
@@ -47,7 +47,7 @@ llm:
     - id: claude-sonnet
       dialect: anthropic
       model: claude-sonnet-5-5
-      api_key_ref: env:ANTHROPIC_API_KEY
+      api_key_ref: key:anthropic
       fallbacks: default
       price_input_per_mtok: 2.0
       price_output_per_mtok: 10.0
@@ -55,14 +55,14 @@ llm:
     - id: claude-haiku
       dialect: anthropic
       model: claude-haiku-5-5
-      api_key_ref: env:ANTHROPIC_API_KEY
+      api_key_ref: key:anthropic
       price_input_per_mtok: 0.1
       price_output_per_mtok: 0.5
 
     - id: gpt-main
       dialect: openai_responses
       model: "${OPENAI_MODEL}"
-      api_key_ref: env:OPENAI_API_KEY
+      api_key_ref: key:openai
       price_input_per_mtok: 0.042
       price_output_per_mtok: 0
 
@@ -70,7 +70,7 @@ llm:
       dialect: openai_compat
       model: deepseek-v4-pro
       base_url: https://api.deepseek.com
-      api_key_ref: env:DEEPSEEK_API_KEY
+      api_key_ref: key:deepseek
       capabilities: {send_reasoning_back: true}
       price_input_per_mtok: 0.66
       price_output_per_mtok: 1.98
@@ -85,7 +85,7 @@ llm:
       dialect: openai_compat
       model: deepseek-v4-flash
       base_url: https://api.deepseek.com
-      api_key_ref: env:DEEPSEEK_API_KEY
+      api_key_ref: key:deepseek
       capabilities: {send_reasoning_back: true}
       price_input_per_mtok: 0.15
       price_output_per_mtok: 0.60

@@ -1,14 +1,15 @@
 """Model configuration as data: the business plugs in any market model by config, not code.
 
 A config names an API dialect, the model, and a reference to its API key. Keys never live in a
-config object: `api_key_ref` is resolved when a client is built (`env:NAME` now; a `db:` scheme
-when the Director's admin dashboard stores keys). Never log a resolved key.
+config object: `api_key_ref` (`key:<name>`) is resolved when a client is built, from the keys an
+admin saved (app/integrations/key_store.py). Never log a resolved key.
 """
 
-import os
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.integrations import key_store
 
 # Most market models speak one of these three APIs:
 # - anthropic: Claude (API, Bedrock/Vertex via base_url when supported)
@@ -59,7 +60,7 @@ class ModelConfig(BaseModel):
     dialect: Dialect
     model: Annotated[str, Field(min_length=1)]
     base_url: str | None = None
-    # Where the API key comes from: "env:ANTHROPIC_API_KEY" (later "db:<key id>")
+    # Which saved key to use: "key:anthropic"
     api_key_ref: Annotated[str, Field(pattern=r"^[a-z]+:.+$")]
     capabilities: Capabilities = Field(default_factory=Capabilities)
     max_output_tokens: Annotated[int, Field(gt=0)] = 16_000
@@ -95,12 +96,7 @@ class ModelConfig(BaseModel):
 
 def resolve_api_key(ref: str) -> str:
     """Read the key `ref` points to. The error never contains the key itself."""
-    scheme, _, name = ref.partition(":")
-    if scheme == "env":
-        value = os.environ.get(name, "")
-        if not value:
-            raise ModelConfigError(f"API key variable {name} is not set")
-        return value
-    raise ModelConfigError(
-        f"unsupported api_key_ref scheme {scheme!r} (supported: env)"
-    )
+    try:
+        return key_store.resolve(ref)
+    except key_store.KeyStoreError as exc:
+        raise ModelConfigError(str(exc)) from None
