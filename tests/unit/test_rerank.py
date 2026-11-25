@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 
+from app.integrations import key_store
 from app.integrations import rerank as mod
 from app.integrations.embeddings.online import EmbeddingError
 
@@ -11,7 +12,7 @@ KEY = "pa-secret-key-for-tests"
 
 @pytest.fixture(autouse=True)
 def key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VOYAGE_API_KEY", KEY)
+    key_store.save("voyage", KEY)
     monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
 
 
@@ -85,6 +86,6 @@ async def test_nothing_to_rerank_makes_no_request() -> None:
 async def test_missing_key_and_too_many_documents_fail_early(monkeypatch) -> None:
     with pytest.raises(ValueError):
         await mod.rerank("q", ["a"] * (mod.MAX_DOCUMENTS + 1))
-    monkeypatch.setenv("VOYAGE_API_KEY", "")
-    with pytest.raises(EmbeddingError, match="not set"):
+    key_store.delete("voyage")
+    with pytest.raises(EmbeddingError, match="no API key saved"):
         await mod.rerank("q", ["a"])

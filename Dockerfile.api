@@ -17,6 +17,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY --chown=ai-service:ai-service app ./app
 COPY --chown=ai-service:ai-service configs ./configs
 COPY --chown=ai-service:ai-service certs ./certs
+# Saved provider keys; mount a volume here or they are lost on redeploy.
+RUN install -d -o ai-service -g ai-service -m 700 data
 
 USER ai-service
 EXPOSE 8081

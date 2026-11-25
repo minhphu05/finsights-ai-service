@@ -4,6 +4,7 @@ from typing import Any
 import httpx
 import pytest
 
+from app.integrations import key_store
 from app.integrations.embeddings import online as mod
 
 KEY = "pa-secret-key-for-tests"
@@ -11,7 +12,7 @@ KEY = "pa-secret-key-for-tests"
 
 @pytest.fixture(autouse=True)
 def key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VOYAGE_API_KEY", KEY)
+    key_store.save("voyage", KEY)
     monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
 
 
@@ -94,12 +95,12 @@ async def test_client_error_is_not_retried_and_hides_the_key() -> None:
 
 @pytest.mark.anyio
 async def test_missing_key_fails_before_any_request(monkeypatch) -> None:
-    monkeypatch.setenv("VOYAGE_API_KEY", "")
+    key_store.delete("voyage")
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("no request expected")
 
-    with pytest.raises(mod.EmbeddingError, match="not set"):
+    with pytest.raises(mod.EmbeddingError, match="no API key saved"):
         await mod.embed(["q"], "query", client=_client(handler))
 
 
@@ -112,11 +113,11 @@ def _cloudflare(monkeypatch: pytest.MonkeyPatch) -> None:
         dialect="cloudflare",
         model="@cf/baai/bge-m3",
         url="https://cf.test/accounts/{account_id}/ai/run/{model}",
-        api_key_ref="env:CF_TOKEN",
-        account_id_ref="env:CF_ACCOUNT",
+        api_key_ref="key:cf_token",
+        account_id_ref="key:cf_account",
     )
-    monkeypatch.setenv("CF_TOKEN", KEY)
-    monkeypatch.setenv("CF_ACCOUNT", "acc-1")
+    key_store.save("cf_token", KEY)
+    key_store.save("cf_account", "acc-1")
     monkeypatch.setattr(mod, "get_provider", lambda kind: provider)
 
 
@@ -144,12 +145,12 @@ async def test_cloudflare_missing_account_id_fails_before_any_request(
     monkeypatch,
 ) -> None:
     _cloudflare(monkeypatch)
-    monkeypatch.setenv("CF_ACCOUNT", "")
+    key_store.delete("cf_account")
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("no request expected")
 
-    with pytest.raises(mod.EmbeddingError, match="CF_ACCOUNT is not set"):
+    with pytest.raises(mod.EmbeddingError, match="cf_account"):
         await mod.embed(["q"], "query", client=_client(handler))
 
 
@@ -161,7 +162,7 @@ def test_an_embedding_model_needs_a_dialect_and_cloudflare_an_account() -> None:
         "kind": "embedding",
         "model": "m",
         "url": "u",
-        "api_key_ref": "env:K",
+        "api_key_ref": "key:k",
     }
     with pytest.raises(ValueError, match="needs a dialect"):
         ProviderConfig(**base)

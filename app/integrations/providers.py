@@ -3,8 +3,8 @@
 The file has three sections: `embedding`, `rerank` and `llm` (read by the LLM catalog). An
 embedding or rerank model is an entry with its URL and a reference to its API key. The clients
 read the `default` of their section, so changing a model or adding a backend is a config
-change. Keys never live in the file: `api_key_ref` is `env:NAME`, resolved from the process
-environment first, then from `.env`. Never log a resolved key.
+change. Keys never live in the file: `api_key_ref` is `key:<name>`, a key an admin
+saved (app/integrations/key_store.py). Never log a resolved key.
 """
 
 import os
@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.integrations import key_store
 
 _ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FILE = _ROOT / "configs" / "models.yaml"
-ENV_FILE = _ROOT / ".env"
 
 Kind = Literal["embedding", "rerank"]
 KINDS: tuple[Kind, ...] = ("embedding", "rerank")
@@ -54,7 +54,7 @@ class ProviderConfig(BaseModel):
         return self
 
     def api_key(self) -> str:
-        """The key this provider uses; the error names the variable, never a value."""
+        """The key this provider uses; the error names the key, never its value."""
         return _resolve(self.api_key_ref)
 
     def account_id(self) -> str:
@@ -96,22 +96,12 @@ class Registry(BaseModel):
         return next(p for p in self.providers if p.id == wanted)
 
 
-@lru_cache
-def _dotenv() -> dict[str, str | None]:
-    return dotenv_values(ENV_FILE)
-
-
 def _resolve(ref: str) -> str:
-    """Read the value `ref` (`env:NAME`) points to; the error never contains the value."""
-    scheme, _, name = ref.partition(":")
-    if scheme != "env":
-        raise ProviderConfigError(
-            f"unsupported reference scheme {scheme!r} (supported: env)"
-        )
-    value = os.environ[name] if name in os.environ else _dotenv().get(name) or ""
-    if not value:
-        raise ProviderConfigError(f"{name} is not set")
-    return value
+    """Read the value `ref` (`key:<name>`) points to; the error never contains it."""
+    try:
+        return key_store.resolve(ref)
+    except key_store.KeyStoreError as exc:
+        raise ProviderConfigError(str(exc)) from None
 
 
 def read_models_file(path: str | Path | None = None) -> dict:

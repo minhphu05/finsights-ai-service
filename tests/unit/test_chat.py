@@ -12,6 +12,7 @@ from openai import AuthenticationError
 
 from app.api.routes import chat
 from app.core.settings import Settings
+from app.integrations import key_store
 from app.integrations.llm.catalog import TIERS, load_catalog
 from app.integrations.llm.config import Capabilities, ModelConfig, ModelConfigError
 from app.integrations.llm.factory import (
@@ -144,8 +145,8 @@ def test_empty_response_returns_bad_gateway(client):
 
 @pytest.fixture
 def provider_env(monkeypatch):
-    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"):
-        monkeypatch.setenv(name, "fake-test-key")
+    for name in ("anthropic", "openai", "deepseek"):
+        key_store.save(name, "fake-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "test-gpt")
 
 
@@ -197,8 +198,8 @@ def test_effort_is_sent_only_when_the_model_accepts_it(
 
 
 def test_missing_key_is_rejected(provider_env, monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY")
-    with pytest.raises(ModelConfigError, match="ANTHROPIC_API_KEY"):
+    key_store.delete("anthropic")
+    with pytest.raises(ModelConfigError, match="anthropic"):
         get_chat_model("anthropic", "cheap")
 
 
@@ -210,7 +211,7 @@ def test_missing_openai_model_is_rejected(provider_env, monkeypatch):
 
 def test_unsupported_dialect_is_rejected(provider_env):
     config = ModelConfig.model_construct(
-        id="x", dialect="unknown", model="m", api_key_ref="env:ANTHROPIC_API_KEY"
+        id="x", dialect="unknown", model="m", api_key_ref="key:anthropic"
     )
     with pytest.raises(LLMConfigurationError, match="unknown"):
         build_chat_model(config)

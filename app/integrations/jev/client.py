@@ -21,7 +21,7 @@ from typing import Any
 
 import httpx
 
-from app.core.settings import get_settings
+from app.integrations import key_store
 from app.integrations.rerank import Reranked
 
 logger = logging.getLogger(__name__)
@@ -56,9 +56,10 @@ async def system_one(
     client: httpx.AsyncClient, state: Any, questions: dict[str, Any]
 ) -> dict[str, Any]:
     """One System One call, retried on rate limits and overload; returns the parsed body."""
-    key = get_settings().typesafe_api_key.get_secret_value()
-    if not key:
-        raise JevError("TYPESAFE_API_KEY is not set")
+    try:
+        key = key_store.resolve("key:typesafe")
+    except key_store.KeyStoreError as exc:
+        raise JevError(str(exc)) from None
     payload = {"model": MODEL, "state": state, "questions": questions}
     for attempt in range(RETRIES + 1):
         try:

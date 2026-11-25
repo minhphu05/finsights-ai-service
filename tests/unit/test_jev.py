@@ -2,9 +2,8 @@ import json
 
 import httpx
 import pytest
-from pydantic import SecretStr
 
-from app.core.settings import get_settings
+from app.integrations import key_store
 from app.integrations.jev import client as mod
 
 KEY = "ts-secret-key-for-tests"
@@ -12,7 +11,7 @@ KEY = "ts-secret-key-for-tests"
 
 @pytest.fixture(autouse=True)
 def key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "typesafe_api_key", SecretStr(KEY))
+    key_store.save("typesafe", KEY)
     monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
 
 
@@ -121,12 +120,12 @@ async def test_errors_never_contain_the_key() -> None:
 async def test_missing_key_fails_before_any_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(get_settings(), "typesafe_api_key", SecretStr(""))
+    key_store.delete("typesafe")
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("no call expected")
 
-    with pytest.raises(mod.JevError, match="TYPESAFE_API_KEY"):
+    with pytest.raises(mod.JevError, match="typesafe"):
         await mod.rerank_pointwise("q", ["a"], client=_client(handler))
 
 
