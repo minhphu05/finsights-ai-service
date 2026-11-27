@@ -249,6 +249,9 @@ class DenseIndex:
     embedded, so a rerun only embeds the questions and a change to the chunker re-embeds.
     """
 
+    # Voyage rerank model to use; None: RERANK_MODEL, else the configured default.
+    rerank_model: str | None = None
+
     def __init__(self, date_from: date, date_to: date, mode: str = "summary") -> None:
         self.date_from, self.date_to, self.mode = date_from, date_to, mode
         self.uids: list[str] = []
@@ -366,6 +369,23 @@ class DenseIndex:
             data.write_bytes(flat.tobytes())
         return [_unit(flat[i * dims : (i + 1) * dims]) for i in range(len(texts))]
 
+    async def _by_vector(
+        self, case: Case, in_range: Callable[[int], bool]
+    ) -> dict[int, float]:
+        """Similarity of the chunks of the case's period to its question."""
+        from app.integrations.embeddings.online import embed
+
+        if case.question not in self._similar:
+            query = _unit(
+                array("f", (await embed([case.question], "query")).vectors[0])
+            )
+            self._similar[case.question] = {
+                item: sum(map(operator.mul, query, vector))
+                for item, vector in enumerate(self.vectors)
+                if in_range(item)
+            }
+        return self._similar[case.question]
+
     async def search(
         self,
         case: Case,
@@ -380,7 +400,6 @@ class DenseIndex:
         whole list (`jev-list`). `gate`: when above 0, Jev is asked of every chunk in the
         ranked results whether it answers the question; chunks scoring below `gate` are dropped,
         and so are articles left with none. It only removes, never adds."""
-        from app.integrations.embeddings.online import embed
         from app.rag.retrieval.bm25 import Bm25Index, reciprocal_rank_fusion
         from app.tools.sql.search_news import vn_day_start_utc
 
@@ -393,16 +412,7 @@ class DenseIndex:
         by_vector: dict[int, float] = {}
         by_keyword: dict[int, float] = {}
         if method in ("dense", "hybrid"):
-            if case.question not in self._similar:
-                query = _unit(
-                    array("f", (await embed([case.question], "query")).vectors[0])
-                )
-                self._similar[case.question] = {
-                    item: sum(map(operator.mul, query, vector))
-                    for item, vector in enumerate(self.vectors)
-                    if in_range(item)
-                }
-            by_vector = self._similar[case.question]
+            by_vector = await self._by_vector(case, in_range)
         if method in ("bm25", "hybrid"):
             if self.bm25 is None:
                 self.bm25 = Bm25Index(self.texts)
@@ -426,7 +436,9 @@ class DenseIndex:
 
             # RERANK_MODEL picks another Voyage reranker (say a cheaper one); the cache name
             # carries the model, so results of different models never mix.
-            voyage_model = os.environ.get("RERANK_MODEL", get_provider("rerank").model)
+            voyage_model = self.rerank_model or os.environ.get(
+                "RERANK_MODEL", get_provider("rerank").model
+            )
             jev_model = jev.MODEL
 
             async def voyage_rerank(query: str, texts: Sequence[str]) -> Any:
@@ -568,6 +580,8 @@ RETRIEVERS: dict[str, Retriever] = {
     "gate30": _dense_retriever("chunks", 2, 80, "dense", "voyage", 0.3),
     "gate50": _dense_retriever("chunks", 2, 80, "dense", "voyage", 0.5),
     "gate70": _dense_retriever("chunks", 2, 80, "dense", "voyage", 0.7),
+    "hybrid-jev80": _dense_retriever("chunks", 2, 80, "hybrid", "jev-point"),
+    "hybrid-gate10": _dense_retriever("chunks", 2, 80, "hybrid", "voyage", 0.1),
     "structure": _dense_retriever("structure"),
     "structure-rerank80": _dense_retriever("structure", 2, 80),
     "semantic": _dense_retriever("semantic"),

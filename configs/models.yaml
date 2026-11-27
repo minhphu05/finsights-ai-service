@@ -25,9 +25,10 @@ embedding:
       account_id_ref: key:cloudflare_account_id
 
 rerank:
-  default: rerank-3
+  default: voyage-rerank-3
   models:
-    - id: rerank-3
+    # `id` is our name and says which provider; `model` is the name the provider's API takes.
+    - id: voyage-rerank-3
       model: rerank-3
       url: https://api.voyageai.com/v1/rerank
       api_key_ref: key:voyage

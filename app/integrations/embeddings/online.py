@@ -150,9 +150,13 @@ async def embed(
     input_type: InputType,
     *,
     client: httpx.AsyncClient | None = None,
+    provider: ProviderConfig | None = None,
 ) -> Embeddings:
-    """Embed `texts` in order, in as many requests as the limits need."""
-    provider = get_provider("embedding")
+    """Embed `texts` in order, in as many requests as the limits need.
+
+    `provider` picks a model for this call; without it, the configured default is used.
+    """
+    provider = provider or get_provider("embedding")
     try:
         key = provider.api_key()
         # Built once to fail on a missing account id before any request.
