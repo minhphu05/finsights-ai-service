@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from datetime import datetime
+from typing import LiteralString
 
 from pgvector import Vector
 from pgvector.psycopg import register_vector_async
@@ -53,7 +54,9 @@ async def connect(dsn: str | None = None) -> AsyncConnection:
     return connection
 
 
-async def _fetch(connection: AsyncConnection, query: str, params: dict) -> list[tuple]:
+async def _fetch(
+    connection: AsyncConnection, query: LiteralString, params: dict
+) -> list[tuple]:
     async with connection.cursor() as cursor:
         await cursor.execute(query, params)
         return await cursor.fetchall()
