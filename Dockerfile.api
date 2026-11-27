@@ -17,8 +17,11 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY --chown=ai-service:ai-service app ./app
 COPY --chown=ai-service:ai-service configs ./configs
 COPY --chown=ai-service:ai-service certs ./certs
-# Saved provider keys; mount a volume here or they are lost on redeploy.
-RUN install -d -o ai-service -g ai-service -m 700 data
+# The admin benchmark runs the eval code; evals/snapshots caches paid rerank answers.
+COPY --chown=ai-service:ai-service evals/runners ./evals/runners
+# Saved provider keys and eval runs; mount a volume here or they are lost on redeploy.
+RUN install -d -o ai-service -g ai-service -m 700 data \
+    && install -d -o ai-service -g ai-service evals/snapshots
 
 USER ai-service
 EXPOSE 8081

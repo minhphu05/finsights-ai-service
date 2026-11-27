@@ -2,9 +2,10 @@
 
 from fastapi import APIRouter
 
-from app.api.routes import chat, health, keys, runs, sessions, usage
+from app.api.routes import chat, evals, health, keys, runs, sessions, usage
 
 router = APIRouter()
+router.include_router(evals.router)
 router.include_router(runs.router)
 router.include_router(health.router)
 router.include_router(keys.router)
