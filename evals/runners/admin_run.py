@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 # TOP_K articles even when long articles hold many of the closest chunks.
 DENSE_DEPTH = 400
 PER_ARTICLE = 2
+# Runs the history lists: the gateway cuts a response at 1 MB, and a run takes about 10 KB.
+MAX_LISTED_RUNS = 50
 _DEFAULT_DIR = Path(__file__).resolve().parents[2] / "data" / "eval_runs"
 
 
@@ -304,10 +306,12 @@ class RunStore:
         return run
 
     def list(self) -> list[EvalRun]:
+        """The newest runs first; older ones stay readable by id."""
         found = (self.get(path.stem) for path in self.directory.glob("*.json"))
-        return sorted(
+        newest = sorted(
             (run for run in found if run), key=lambda r: r.created_at, reverse=True
         )
+        return newest[:MAX_LISTED_RUNS]
 
 
 store = RunStore()

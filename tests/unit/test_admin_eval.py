@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.integrations import key_store
 from app.integrations.embeddings import online as embeddings
 from app.main import app
+from app.schemas.evals import EvalRun
 from app.storage.postgres import news_search
 from evals.runners import admin_run
 
@@ -161,6 +162,27 @@ def test_a_period_without_vectors_is_rejected(pgvector) -> None:
 def test_bad_input_is_rejected(pgvector, changes) -> None:
     response = client.post("/admin/evals/retrieval", json=_body(**changes))
     assert response.status_code == 422
+
+
+def test_history_lists_the_newest_runs_only(pgvector) -> None:
+    ids = [f"{n:032x}" for n in range(admin_run.MAX_LISTED_RUNS + 1)]
+    for n, run_id in enumerate(ids):
+        admin_run.store.save(
+            EvalRun(
+                id=run_id,
+                status="done",
+                created_at=f"2026-11-01T00:00:{n:02d}+00:00",
+                dataset="set.jsonl",
+                embedding="bge-m3",
+                rerank="none",
+                decision="none",
+            )
+        )
+
+    listed = client.get("/admin/evals/retrieval").json()["runs"]
+
+    assert [r["id"] for r in listed] == ids[:0:-1]  # all but the oldest
+    assert client.get(f"/admin/evals/retrieval/{ids[0]}").status_code == 200
 
 
 def test_unknown_run_and_path_tricks(pgvector) -> None:
