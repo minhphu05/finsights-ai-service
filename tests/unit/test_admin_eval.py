@@ -1,3 +1,4 @@
+import asyncio
 import time
 from datetime import UTC, datetime
 
@@ -8,7 +9,7 @@ from app.integrations import key_store
 from app.integrations.embeddings import online as embeddings
 from app.integrations.rerank import Reranked
 from app.main import app
-from app.schemas.evals import EvalRun
+from app.schemas.evals import EvalRequest, EvalRun
 from app.storage.postgres import news_search
 from evals.runners import admin_run, retrieval
 
@@ -210,6 +211,38 @@ def test_spend_of_unpriced_and_self_hosted_models() -> None:
     # No output price is needed when nothing was billed as output.
     free = admin_run.spend(calls[:1], {"local": (0, None)})
     assert free.cost_usd == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("hangs", [1, 2])
+async def test_a_hanging_like_query_is_cancelled_and_tried_once_more(
+    monkeypatch, hangs
+) -> None:
+    started: list[str] = []
+    cancelled: list[bool] = []
+
+    async def like(case):
+        started.append(case.id)
+        if len(started) <= hangs:
+            try:
+                await asyncio.sleep(60)
+            finally:
+                cancelled.append(True)
+        return [("a1", "t", "x")]
+
+    monkeypatch.setattr(retrieval, "like_retriever", like)
+    monkeypatch.setattr(admin_run, "LIKE_TIMEOUT", 0.05)
+    run = admin_run.like_on(asyncio.get_running_loop())
+    case = admin_run._case(EvalRequest(**_body()).cases[0])
+
+    if hangs == 1:
+        assert await run(case) == [("a1", "t", "x")]
+    else:
+        with pytest.raises(TimeoutError):
+            await run(case)
+    await asyncio.sleep(0.01)  # let the cancellation reach the query
+
+    assert len(started) == 2 and len(cancelled) == hangs
 
 
 def test_history_lists_the_newest_runs_only(pgvector) -> None:
