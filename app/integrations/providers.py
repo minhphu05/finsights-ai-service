@@ -44,6 +44,9 @@ class ProviderConfig(BaseModel):
     dimensions: Annotated[int, Field(ge=256, le=2048)] | None = None
     # cloudflare only: reference to the account id the `url` template needs
     account_id_ref: Annotated[str, Field(pattern=r"^[a-z]+:.+$")] | None = None
+    # USD per million tokens; 0 for a self-hosted model, None when unknown
+    price_input_per_mtok: Annotated[float, Field(ge=0)] | None = None
+    price_output_per_mtok: Annotated[float, Field(ge=0)] | None = None
 
     @model_validator(mode="after")
     def _check(self) -> ProviderConfig:

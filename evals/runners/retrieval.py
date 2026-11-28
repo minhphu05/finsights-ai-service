@@ -44,6 +44,7 @@ import operator
 import os
 import selectors
 import sys
+import time
 from array import array
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
@@ -69,6 +70,18 @@ class Case:
     relevant: frozenset[str]
     irrelevant: frozenset[str]
     evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Call:
+    """One paid model call a search needed, whether it was made or answered from a cache."""
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+    seconds: float  # how long it took when it was made
+    cached: bool = False
+    estimated: bool = False  # the API gave no token count
 
 
 @dataclass
@@ -207,11 +220,15 @@ async def _cached_rerank(
     question: str,
     texts: list[str],
     call: Callable[[str, list[str]], Awaitable[Any]],
+    calls: list[Call] | None = None,
 ) -> Any:
     """`call(question, texts)` once per (reranker, question, texts), kept in evals/snapshots.
 
     Rerankers cost per call and give the same answer for the same input, so a rerun, or a
     sweep of gate thresholds over the same chunks, pays once. `name` holds the model version.
+
+    With `calls`, what the answer cost is appended to it. An answer cached without its usage
+    is asked again.
     """
     from app.integrations.rerank import Reranked
 
@@ -222,16 +239,38 @@ async def _cached_rerank(
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 row = json.loads(line)
-                _rerank_cache[row["key"]] = [(i, s) for i, s in row["ranked"]]
+                _rerank_cache[row["key"]] = row
     digest = hashlib.sha256("\x00".join([name, question, *texts]).encode()).hexdigest()[
         :24
     ]
-    if digest not in _rerank_cache:
+    row = _rerank_cache.get(digest)
+    cached = row is not None and (calls is None or "input_tokens" in row)
+    if not cached:
+        started = time.perf_counter()
         result = await call(question, texts)
-        _rerank_cache[digest] = list(result.ranked)
+        row = {
+            "key": digest,
+            "ranked": result.ranked,
+            "input_tokens": result.tokens - result.output_tokens,
+            "output_tokens": result.output_tokens,
+            "seconds": round(time.perf_counter() - started, 3),
+        }
+        _rerank_cache[digest] = row
         with path.open("a", encoding="utf-8") as out:
-            out.write(json.dumps({"key": digest, "ranked": result.ranked}) + "\n")
-    return Reranked(_rerank_cache[digest], 0)
+            out.write(json.dumps(row) + "\n")
+    assert row is not None
+    if calls is not None:
+        calls.append(
+            Call(
+                # The name is "<backend>:<model>".
+                name.partition(":")[2],
+                row["input_tokens"],
+                row["output_tokens"],
+                row["seconds"],
+                cached,
+            )
+        )
+    return Reranked([(i, s) for i, s in row["ranked"]], 0)
 
 
 class DenseIndex:
@@ -251,6 +290,8 @@ class DenseIndex:
 
     # Voyage rerank model to use; None: RERANK_MODEL, else the configured default.
     rerank_model: str | None = None
+    # When a list, the paid calls of each search are appended to it.
+    calls: list[Call] | None = None
 
     def __init__(self, date_from: date, date_to: date, mode: str = "summary") -> None:
         self.date_from, self.date_to, self.mode = date_from, date_to, mode
@@ -455,7 +496,11 @@ class DenseIndex:
             )
             name, call = rerankers[reranker]
             result = await _cached_rerank(
-                name, case.question, [self.texts[i] for _, i in pool], call
+                name,
+                case.question,
+                [self.texts[i] for _, i in pool],
+                call,
+                self.calls,
             )
             scored = defaultdict(list)
             for index, relevance in result.ranked:
@@ -478,7 +523,11 @@ class DenseIndex:
 
             chunks = [chunk for _, found in picked for chunk in found]
             verdicts = await _cached_rerank(
-                f"jev-point:{jev.MODEL}", case.question, chunks, jev.rerank_pointwise
+                f"jev-point:{jev.MODEL}",
+                case.question,
+                chunks,
+                jev.rerank_pointwise,
+                self.calls,
             )
             relevance = dict(verdicts.ranked)
             kept: list[tuple[int, list[str]]] = []

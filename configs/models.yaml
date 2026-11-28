@@ -1,8 +1,11 @@
 # Every model the service can call, in three sections: embedding, rerank and llm.
 # Add a model by adding an entry; switch the one in use with `default` (embedding, rerank)
 # or `profiles` (llm). No keys here, only `api_key_ref` (key:<name>, a key saved from the
-# admin page, see app/integrations/key_store.py). Override the file with AI_MODELS_FILE. Jev is not here: it has its own module
-# (app/integrations/jev). Restart the server after a change; the file is cached.
+# admin page, see app/integrations/key_store.py). Override the file with AI_MODELS_FILE. Jev has its own module
+# (app/integrations/jev); only its price is listed here. Restart the server after a change; the file is cached.
+#
+# price_input_per_mtok / price_output_per_mtok are USD per million tokens, used to cost the
+# admin benchmark. A self-hosted model is 0; leave them out when the price is unknown.
 
 embedding:
   default: voyage-4
@@ -15,6 +18,8 @@ embedding:
       api_key_ref: key:voyage
       # Must match the pgvector column.
       dimensions: 1024
+      price_input_per_mtok: 0.06
+      price_output_per_mtok: 0
 
     # Cloudflare Workers AI, 1024 dimensions. Select it with `default: bge-m3`.
     - id: bge-m3
@@ -23,6 +28,8 @@ embedding:
       url: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
       api_key_ref: key:cloudflare
       account_id_ref: key:cloudflare_account_id
+      price_input_per_mtok: 0.012
+      price_output_per_mtok: 0
 
 rerank:
   default: voyage-rerank-3
@@ -32,6 +39,16 @@ rerank:
       model: rerank-3
       url: https://api.voyageai.com/v1/rerank
       api_key_ref: key:voyage
+      price_input_per_mtok: 0.05
+      price_output_per_mtok: 0
+
+# Decision models, for their price only. TypeSafe publishes no price page: 0.042 / 0 is what
+# third parties list for Jev 1.13; check it in the TypeSafe console.
+decision:
+  models:
+    - id: jev-1.14.0
+      price_input_per_mtok: 0.042
+      price_output_per_mtok: 0
 
 llm:
   # `${NAME}` in model / base_url is read from the environment when a config is selected, so a
