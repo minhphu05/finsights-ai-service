@@ -58,6 +58,9 @@ DENSE_DEPTH = 400
 PER_ARTICLE = 2
 # Runs the history lists: the gateway cuts a response at 1 MB, and a run takes about 15 KB.
 MAX_LISTED_RUNS = 50
+# Seconds a `like` query may take: a pooled MySQL connection that died unnoticed would
+# otherwise hold the run until the operating system gives up on it.
+LIKE_TIMEOUT = 30.0
 _DEFAULT_DIR = Path(__file__).resolve().parents[2] / "data" / "eval_runs"
 
 
@@ -500,6 +503,28 @@ async def execute(
         await connection.close()
 
 
+def like_on(main_loop: asyncio.AbstractEventLoop) -> retrieval.Retriever:
+    """The `like` retriever run on the server's event loop, which owns the MySQL pool.
+
+    A query over LIKE_TIMEOUT is cancelled, which drops its connection, and tried once more.
+    """
+
+    async def attempt(case: retrieval.Case) -> list[retrieval.Hit]:
+        future = asyncio.run_coroutine_threadsafe(
+            retrieval.like_retriever(case), main_loop
+        )
+        return await asyncio.wait_for(asyncio.wrap_future(future), LIKE_TIMEOUT)
+
+    async def like(case: retrieval.Case) -> list[retrieval.Hit]:
+        try:
+            return await attempt(case)
+        except TimeoutError:
+            logger.warning("like query timed out for case %s, retrying", case.id)
+            return await attempt(case)
+
+    return like
+
+
 def _work(
     run: EvalRun,
     cases: list[retrieval.Case],
@@ -508,13 +533,7 @@ def _work(
 ) -> None:
     like = None
     if get_settings().mysql_source_readonly_dsn.get_secret_value():
-        # The MySQL pool belongs to the server's event loop, so `like` queries run there.
-        async def like(case: retrieval.Case) -> list[retrieval.Hit]:
-            return await asyncio.wrap_future(
-                asyncio.run_coroutine_threadsafe(
-                    retrieval.like_retriever(case), main_loop
-                )
-            )
+        like = like_on(main_loop)
 
     try:
         run_in_selector_loop(execute(run, cases, models, like))
