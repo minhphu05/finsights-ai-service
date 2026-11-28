@@ -56,10 +56,29 @@ class Progress(BaseModel):
     total: int = 0
 
 
+class ModelUsage(BaseModel):
+    model: str
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    estimated: bool = False  # some token counts were estimated from the text length
+    cost_usd: float | None  # None: the model has no price
+
+
+class Spend(BaseModel):
+    cost_usd: float | None = 0  # None: a model used has no price
+    estimated: bool = False
+    usage: list[ModelUsage] = []
+
+
 class StrategyResult(BaseModel):
     id: str
     overall: dict[str, float | int | None]
     byCategory: dict[str, dict[str, float | int | None]]
+    # As if the strategy ran alone: answers it took from a cache count in full.
+    seconds: float | None = None
+    seconds_per_case: float | None = None
+    spend: Spend | None = None
 
 
 class NotRun(BaseModel):
@@ -77,6 +96,10 @@ class EvalRun(BaseModel):
     rerank: str
     decision: str
     progress: Progress = Progress()
+    # What the run really took and paid; None until it ends (and for runs made before).
+    seconds: float | None = None
+    load_seconds: float | None = None  # reading the chunks and building BM25
+    spend: Spend | None = None
     results: list[StrategyResult] = []
     skipped: list[NotRun] = []  # not possible with the chosen models or setup
     failed: list[NotRun] = []  # started and stopped on an error

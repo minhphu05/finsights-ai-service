@@ -80,9 +80,10 @@ async def system_one(
     raise AssertionError("unreachable")
 
 
-def _tokens(body: dict[str, Any]) -> int:
+def _tokens(body: dict[str, Any]) -> tuple[int, int]:
+    """(input, output) tokens of one answer."""
     usage = body.get("usage") or {}
-    return int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+    return int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))
 
 
 async def rerank_pointwise(
@@ -97,7 +98,7 @@ async def rerank_pointwise(
     client = client or httpx.AsyncClient(timeout=30)
     limit = asyncio.Semaphore(concurrency)
 
-    async def judge(passage: str) -> tuple[float, int]:
+    async def judge(passage: str) -> tuple[float, tuple[int, int]]:
         async with limit:
             # Field order is fixed: Jev reads the state in the same order every time.
             body = await system_one(
@@ -120,7 +121,11 @@ async def rerank_pointwise(
         key=lambda pair: pair[1],
         reverse=True,
     )
-    return Reranked(ranked, sum(tokens for _, tokens in judged))
+    return Reranked(
+        ranked,
+        sum(sum(tokens) for _, tokens in judged),
+        sum(output for _, (_, output) in judged),
+    )
 
 
 async def rerank_listwise(
@@ -150,4 +155,5 @@ async def rerank_listwise(
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise JevError(f"unexpected Jev answer: {exc!r}") from None
     ranked = sorted(enumerate(scores), key=lambda pair: pair[1], reverse=True)
-    return Reranked(ranked, _tokens(body))
+    tokens = _tokens(body)
+    return Reranked(ranked, sum(tokens), tokens[1])

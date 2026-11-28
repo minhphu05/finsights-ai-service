@@ -14,10 +14,11 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -30,15 +31,19 @@ from app.integrations.providers import (
     ProviderConfig,
     ProviderConfigError,
     get_registry,
+    read_models_file,
 )
+from app.rag.retrieval.bm25 import Bm25Index
 from app.schemas.evals import (
     NONE,
     EvalOptions,
     EvalRequest,
     EvalRun,
+    ModelUsage,
     NotRun,
     Option,
     Progress,
+    Spend,
     StrategyResult,
 )
 from app.storage.postgres import news_search
@@ -51,7 +56,7 @@ logger = logging.getLogger(__name__)
 # TOP_K articles even when long articles hold many of the closest chunks.
 DENSE_DEPTH = 400
 PER_ARTICLE = 2
-# Runs the history lists: the gateway cuts a response at 1 MB, and a run takes about 10 KB.
+# Runs the history lists: the gateway cuts a response at 1 MB, and a run takes about 15 KB.
 MAX_LISTED_RUNS = 50
 _DEFAULT_DIR = Path(__file__).resolve().parents[2] / "data" / "eval_runs"
 
@@ -205,6 +210,57 @@ async def check_vectors(request: EvalRequest, model: ProviderConfig) -> None:
         )
 
 
+Price = tuple[float | None, float | None]  # USD per million (input, output) tokens
+
+
+def prices(models: Models) -> dict[str, Price]:
+    """The price of each chosen model, under the name its calls carry."""
+    chosen = [p for p in (models.embedding, models.rerank) if p is not None]
+    found = {p.model: (p.price_input_per_mtok, p.price_output_per_mtok) for p in chosen}
+    if models.decision:
+        listed = read_models_file().get("decision", {}).get("models", [])
+        entry = next((m for m in listed if m.get("id") == models.decision), {})
+        found[models.decision] = (
+            entry.get("price_input_per_mtok"),
+            entry.get("price_output_per_mtok"),
+        )
+    return found
+
+
+def spend(calls: Sequence[retrieval.Call], price: dict[str, Price]) -> Spend:
+    """Tokens and cost of `calls`, per model."""
+    by_model: dict[str, list[retrieval.Call]] = defaultdict(list)
+    for call in calls:
+        by_model[call.model].append(call)
+    usage = []
+    for model, found in sorted(by_model.items()):
+        used = (
+            sum(c.input_tokens for c in found),
+            sum(c.output_tokens for c in found),
+        )
+        rates = price.get(model, (None, None))
+        # A missing price matters only for tokens actually used on that side.
+        unknown = any(n and rate is None for n, rate in zip(used, rates))
+        usage.append(
+            ModelUsage(
+                model=model,
+                calls=len(found),
+                input_tokens=used[0],
+                output_tokens=used[1],
+                estimated=any(c.estimated for c in found),
+                cost_usd=None
+                if unknown
+                else sum(n * (rate or 0) for n, rate in zip(used, rates)) / 1e6,
+            )
+        )
+    costs = [u.cost_usd for u in usage]
+    return Spend(
+        cost_usd=None if None in costs else sum(c or 0 for c in costs),
+        estimated=any(u.estimated for u in usage),
+        usage=usage,
+    )
+
+
 class PgVectorIndex(retrieval.DenseIndex):
     """The stored chunks of one model: texts in memory for BM25, vectors in pgvector."""
 
@@ -214,7 +270,7 @@ class PgVectorIndex(retrieval.DenseIndex):
         )
         self.connection, self.provider = connection, provider
         self._item: dict[int, int] = {}  # chunk id -> position in `texts`
-        self._found: dict[tuple, dict[int, float]] = {}
+        self._found: dict[tuple, tuple[dict[int, float], retrieval.Call]] = {}
 
     async def load(self) -> None:
         rows = await news_search.load_chunks(
@@ -240,6 +296,7 @@ class PgVectorIndex(retrieval.DenseIndex):
     ) -> dict[int, float]:
         key = (case.question, case.date_from, case.date_to)
         if key not in self._found:
+            started = time.perf_counter()
             embedded = await embeddings.embed(
                 [case.question], "query", provider=self.provider
             )
@@ -253,10 +310,23 @@ class PgVectorIndex(retrieval.DenseIndex):
                 limit=DENSE_DEPTH,
             )
             # A chunk added after `load` is left out: the run keeps one corpus.
-            self._found[key] = {
-                self._item[i]: score for i, score in rows if i in self._item
-            }
-        return self._found[key]
+            found = {self._item[i]: score for i, score in rows if i in self._item}
+            call = retrieval.Call(
+                self.provider.model,
+                embedded.tokens
+                or int(len(case.question) / embeddings.CHARS_PER_TOKEN) + 1,
+                0,
+                # The question's embedding and its vector search.
+                time.perf_counter() - started,
+                estimated=not embedded.tokens,
+            )
+            self._found[key] = (found, call)
+        else:
+            found, call = self._found[key]
+            call = replace(call, cached=True)
+        if self.calls is not None:
+            self.calls.append(call)
+        return found
 
 
 def skip_reason(strategy: Strategy, models: Models, has_mysql: bool) -> str | None:
@@ -358,16 +428,27 @@ async def execute(
     run.progress = Progress(total=len(runnable) * len(cases))
     store.save(run)
 
+    price = prices(models)
+    paid: list[retrieval.Call] = []  # the calls really made
+    began = time.perf_counter()
     connection = await news_search.connect()
     try:
         index = PgVectorIndex(connection, models.embedding, cases)
         if models.rerank:
             index.rerank_model = models.rerank.model
         await index.load()
+        # Built here so that no strategy's time includes it.
+        if any(s.method in ("bm25", "hybrid") for s in runnable):
+            index.bm25 = Bm25Index(index.texts)
+        run.load_seconds = round(time.perf_counter() - began, 3)
         for number, strategy in enumerate(runnable):
             scores: list[retrieval.Score] = []
+            needed: list[retrieval.Call] = []
+            seconds = 0.0
             try:
                 for case in cases:
+                    index.calls = []
+                    started = time.perf_counter()
                     if strategy.method == "like":
                         assert like is not None
                         ranked = await like(case)
@@ -380,10 +461,18 @@ async def execute(
                             strategy.reranker,
                             strategy.gate,
                         )
+                    # Alone, the strategy would have waited for the cached calls too.
+                    seconds += time.perf_counter() - started
+                    seconds += sum(c.seconds for c in index.calls if c.cached)
+                    needed.extend(index.calls)
+                    paid.extend(c for c in index.calls if not c.cached)
+                    index.calls = []
                     scores.append(retrieval.score(case, ranked))
                     run.progress.done += 1
                     store.save(run)
             except Exception as exc:
+                # Calls made before the error are paid for all the same.
+                paid.extend(c for c in index.calls or [] if not c.cached)
                 logger.exception("strategy %s failed", strategy.id)
                 run.failed.append(NotRun(id=strategy.id, reason=_reason(exc)))
                 run.progress.done = (number + 1) * len(cases)
@@ -399,10 +488,15 @@ async def execute(
                             name: retrieval.summarize(found)
                             for name, found in sorted(by_category.items())
                         },
+                        seconds=round(seconds, 3),
+                        seconds_per_case=round(seconds / len(cases), 3),
+                        spend=spend(needed, price),
                     )
                 )
             store.save(run)
     finally:
+        run.seconds = round(time.perf_counter() - began, 3)
+        run.spend = spend(paid, price)
         await connection.close()
 
 

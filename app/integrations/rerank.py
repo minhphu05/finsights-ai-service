@@ -35,7 +35,8 @@ MAX_DOCUMENTS = 200
 class Reranked:
     # (index into the documents sent, relevance score), best first.
     ranked: list[tuple[int, float]]
-    tokens: int
+    tokens: int  # all tokens billed
+    output_tokens: int = 0  # the part of `tokens` billed as output
 
 
 async def rerank(

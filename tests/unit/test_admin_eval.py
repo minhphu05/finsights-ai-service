@@ -6,10 +6,11 @@ from fastapi.testclient import TestClient
 
 from app.integrations import key_store
 from app.integrations.embeddings import online as embeddings
+from app.integrations.rerank import Reranked
 from app.main import app
 from app.schemas.evals import EvalRun
 from app.storage.postgres import news_search
-from evals.runners import admin_run
+from evals.runners import admin_run, retrieval
 
 client = TestClient(app)
 
@@ -45,7 +46,8 @@ def pgvector(monkeypatch, tmp_path) -> dict:
 
     async def embed(texts, input_type, *, provider):
         seen["embedded_with"] = provider.id
-        return embeddings.Embeddings([[1.0, 0.0]], 1)
+        seen["embed_calls"] = seen.get("embed_calls", 0) + 1
+        return embeddings.Embeddings([[1.0, 0.0]], 1_000_000)
 
     for name, fake in [
         ("connect", connect),
@@ -162,6 +164,52 @@ def test_a_period_without_vectors_is_rejected(pgvector) -> None:
 def test_bad_input_is_rejected(pgvector, changes) -> None:
     response = client.post("/admin/evals/retrieval", json=_body(**changes))
     assert response.status_code == 422
+
+
+def test_cost_counts_cached_calls_per_strategy_but_pays_them_once(
+    pgvector, monkeypatch, tmp_path
+) -> None:
+    reranked: list[str] = []
+
+    async def fake_rerank(query, documents, **kwargs):
+        reranked.append(query)
+        return Reranked([(i, 1.0 - i / 10) for i in range(len(documents))], 2_000_000)
+
+    monkeypatch.setattr("app.integrations.rerank.rerank", fake_rerank)
+    monkeypatch.setattr(retrieval, "SNAPSHOTS", tmp_path)
+    monkeypatch.setattr(retrieval, "_rerank_cache", None)
+
+    started = client.post(
+        "/admin/evals/retrieval", json=_body(rerank="voyage-rerank-3")
+    )
+    run = _finished(started.json()["id"])
+
+    by_id = {r["id"]: r for r in run["results"]}
+    assert by_id["bm25"]["spend"] == {"cost_usd": 0, "estimated": False, "usage": []}
+    # 1M embedding tokens at 0.012; both dense and hybrid need them.
+    assert by_id["dense"]["spend"]["cost_usd"] == pytest.approx(0.012)
+    assert by_id["hybrid"]["spend"]["cost_usd"] == pytest.approx(0.012)
+    # Plus 2M rerank tokens at 0.05.
+    assert by_id["rerank80"]["spend"]["cost_usd"] == pytest.approx(0.112)
+    # Both rerank strategies saw the same chunks: one real call, counted in each.
+    assert by_id["hybrid-rerank80"]["spend"]["cost_usd"] == pytest.approx(0.112)
+    assert len(reranked) == 1 and pgvector["embed_calls"] == 1
+    assert run["spend"]["cost_usd"] == pytest.approx(0.112)
+    assert [u["calls"] for u in run["spend"]["usage"]] == [1, 1]
+    assert run["seconds"] >= run["load_seconds"] >= 0
+    assert all(r["seconds_per_case"] >= 0 for r in run["results"])
+
+
+def test_spend_of_unpriced_and_self_hosted_models() -> None:
+    calls = [retrieval.Call("local", 500, 0, 0.1), retrieval.Call("x", 10, 5, 0.1)]
+
+    unknown = admin_run.spend(calls, {"local": (0, 0), "x": (1.0, None)})
+    assert unknown.cost_usd is None
+    assert [u.cost_usd for u in unknown.usage] == [0, None]
+
+    # No output price is needed when nothing was billed as output.
+    free = admin_run.spend(calls[:1], {"local": (0, None)})
+    assert free.cost_usd == 0
 
 
 def test_history_lists_the_newest_runs_only(pgvector) -> None:
