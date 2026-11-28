@@ -7,6 +7,8 @@ on:
       - "app/**"
       - "configs/**"
       - "certs/**"
+      # Dockerfile.api copies the eval code the admin benchmark runs.
+      - "evals/runners/**"
       - "pyproject.toml"
       - "uv.lock"
       - "Dockerfile.api"
